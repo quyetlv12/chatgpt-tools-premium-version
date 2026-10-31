@@ -72,4 +72,10 @@
   <symbol id="ti-list-details" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M13 5h8M13 9h5M13 15h8M13 19h5M3 5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5M3 15a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4"/>
   </symbol>
+  <symbol id="ti-route" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="5" cy="5" r="2"/>
+    <circle cx="19" cy="19" r="2"/>
+    <path d="M7 5h2a5 5 0 0 1 5 5v4a5 5 0 0 0 5 5"/>
+    <path d="m16 16 3 3 3-3"/>
+  </symbol>
 </svg>

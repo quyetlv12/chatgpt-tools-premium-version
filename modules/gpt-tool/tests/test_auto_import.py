@@ -51,35 +51,68 @@ def test_auto_import_checkbox_controls_requests_and_remembers_choice():
                     payload = requests[-1]
                     assert payload["cockpit_import"] is (fmt == "cockpit" and enabled)
                     assert payload["nine_router_import"] is (fmt == "9router" and enabled)
+                    assert payload["sub2api_import"] is False
+
+            page.locator('input[name="fmt"][value="sub2api"]').check()
+            assert toggle.is_visible()
+            assert page.locator("#sub2api-config").is_visible()
+            page.locator("#sub2api-url").fill("https://sub2api.example.invalid")
+            page.locator("#sub2api-api-key").fill("admin-secret-never-store")
+            with page.expect_response("**/api/jobs/synthetic"):
+                page.locator("#run-export").click()
+            page.wait_for_function("document.getElementById('run-export').dataset.action === 'run'")
+            payload = requests[-1]
+            assert payload["sub2api_import"] is True
+            assert payload["sub2api_url"] == "https://sub2api.example.invalid"
+            assert payload["sub2api_api_key"] == "admin-secret-never-store"
+            assert payload["cockpit_import"] is False
+            assert payload["nine_router_import"] is False
+            stored = page.evaluate("localStorage.getItem('gpt-tool-ui')")
+            assert "admin-secret-never-store" not in stored
+            assert "sub2api.example.invalid" in stored
+
             toggle.uncheck()
+            assert page.locator("#sub2api-config").is_hidden()
             page.reload()
             assert not toggle.is_checked(), "off must survive page reload"
+            assert page.locator("#sub2api-api-key").input_value() == ""
             page.locator('input[name="fmt"][value="cockpit"]').check()
             assert not toggle.is_checked(), "changing format must not re-enable import"
             page.locator('input[name="fmt"][value="sub2api"]').check()
-            assert not toggle.is_visible()
+            assert toggle.is_visible()
+            assert page.locator("#sub2api-config").is_hidden()
             page.locator("#lines").fill("synthetic@example.invalid|synthetic|TEST")
             with page.expect_response("**/api/jobs/synthetic"):
                 page.locator("#run-export").click()
             assert requests[-1]["cockpit_import"] is False
             assert requests[-1]["nine_router_import"] is False
+            assert requests[-1]["sub2api_import"] is False
+            assert requests[-1]["sub2api_api_key"] == ""
             assert not errors
         finally:
             browser.close()
 
 
-@pytest.mark.parametrize("fmt", ["cockpit", "9router"])
+@pytest.mark.parametrize("fmt", ["cockpit", "9router", "sub2api"])
 def test_disabled_import_still_exports_without_calling_integrations(fmt, monkeypatch):
     calls = []
     completed = threading.Event()
 
     def export(*args, **kwargs):
-        calls.append(("export", kwargs["cockpit_import"], kwargs["nine_router_import"]))
+        calls.append(
+            (
+                "export",
+                kwargs["cockpit_import"],
+                kwargs["nine_router_import"],
+                kwargs["sub2api_import"],
+            )
+        )
         completed.set()
 
     monkeypatch.setattr(server, "export_bulk", export)
     monkeypatch.setattr(server, "_send_job_to_cockpit", lambda *args: calls.append("cockpit"))
     monkeypatch.setattr(server, "_send_job_to_nine_router", lambda *args: calls.append("9router"))
+    monkeypatch.setattr(server, "_send_job_to_sub2api", lambda *args: calls.append("sub2api"))
     httpd, _ = server._bind("127.0.0.1", 0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -89,7 +122,7 @@ def test_disabled_import_still_exports_without_calling_integrations(fmt, monkeyp
     try:
         connection.request("POST", "/api/export", body=json.dumps({
             "format": fmt, "lines": "synthetic@example.invalid|synthetic|TEST",
-            "cockpit_import": False, "nine_router_import": False,
+            "cockpit_import": False, "nine_router_import": False, "sub2api_import": False,
         }), headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}"})
         response = connection.getresponse()
         assert response.status == 200
@@ -99,9 +132,10 @@ def test_disabled_import_still_exports_without_calling_integrations(fmt, monkeyp
         while not server._jobs[job_id]["done"] and time.monotonic() < deadline:
             time.sleep(0.01)
         assert server._jobs[job_id]["done"]
-        assert calls == [("export", False, False)]
+        assert calls == [("export", False, False, False)]
         assert server._jobs[job_id]["cockpit"]["enabled"] is False
         assert server._jobs[job_id]["nine_router"]["enabled"] is False
+        assert server._jobs[job_id]["sub2api"]["enabled"] is False
     finally:
         connection.close()
         httpd.shutdown()

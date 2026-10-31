@@ -26,6 +26,7 @@ class Outcome:
     index: int | None = None
     cockpit_payload: object | None = None
     nine_router_payload: object | None = None
+    sub2api_payload: object | None = None
     cancelled: bool = False
 
 
@@ -63,6 +64,7 @@ def export_one(
     index: int | None = None,
     cockpit_import: bool = False,
     nine_router_import: bool = False,
+    sub2api_import: bool = False,
     cancel_event=None,
 ) -> Outcome:
     def step(email: str, name: str) -> None:
@@ -139,6 +141,7 @@ def export_one(
         path = write_json(out_dir, email, body)
         cockpit_payload = convert_canonical(canonical, "cockpit") if cockpit_import else None
         nine_router_payload = convert_canonical(canonical, "9router") if nine_router_import else None
+        sub2api_payload = convert_canonical(canonical, "codex") if sub2api_import else None
     except Exception as exc:
         append_failed(out_dir, email, "export", str(exc))
         return done(email, False, error=str(exc), step="export")
@@ -149,6 +152,7 @@ def export_one(
         step="done",
         cockpit_payload=cockpit_payload,
         nine_router_payload=nine_router_payload,
+        sub2api_payload=sub2api_payload,
     )
 
 
@@ -162,6 +166,7 @@ def export_bulk(
     on_step=None,
     cockpit_import: bool = False,
     nine_router_import: bool = False,
+    sub2api_import: bool = False,
     cancel_event=None,
 ) -> list[Outcome]:
     out = out_dir or DEFAULT_OUT
@@ -191,6 +196,7 @@ def export_bulk(
             index=index,
             cockpit_import=cockpit_import,
             nine_router_import=nine_router_import,
+            sub2api_import=sub2api_import,
             cancel_event=cancel_event,
         )
 

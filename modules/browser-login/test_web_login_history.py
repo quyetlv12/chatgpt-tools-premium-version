@@ -353,8 +353,10 @@ class WebLoginHistoryTests(unittest.TestCase):
                 workers=1,
                 link_url="https://example.com/path",
                 reload_after=37,
+                mobile_enabled=True,
             )
         self.assertEqual(command.call_args.kwargs['reload_after'], 37)
+        self.assertTrue(command.call_args.kwargs['mobile_enabled'])
 
         status = server.get_web_login_status()
         serialized = json.dumps({

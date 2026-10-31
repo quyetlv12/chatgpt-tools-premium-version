@@ -7,6 +7,7 @@
     events: null,
     output: '',
     clearPending: false,
+    stopPending: false,
     closeWindowsPending: false,
     autoOpen: new Set(),
     launchPaths: new Map(),
@@ -72,6 +73,9 @@
     const jobs = [...state.jobs.values()].sort((a, b) => a.created_at - b.created_at);
     $('clear-passkey-jobs').disabled = state.clearPending;
     $('clear-passkey-jobs').querySelector('span').textContent = state.clearPending ? 'Đang dọn…' : 'Dọn danh sách';
+    const activeJobs = [...state.jobs.values()].filter((job) => ['queued', 'running'].includes(job.status));
+    $('stop-passkey-jobs').disabled = state.stopPending || activeJobs.length === 0;
+    $('stop-passkey-jobs').querySelector('span').textContent = state.stopPending ? 'Đang dừng…' : 'Dừng tất cả';
     $('close-passkey-windows').disabled = state.closeWindowsPending;
     $('close-passkey-windows').querySelector('span').textContent = state.closeWindowsPending ? 'Đang đóng…' : 'Đóng tất cả cửa sổ';
     $('passkey-empty-state').style.display = jobs.length ? 'none' : 'block';
@@ -220,6 +224,19 @@
     }
   }
 
+  async function stopJobs() {
+    if (state.stopPending) return;
+    state.stopPending = true;
+    renderJobs();
+    try {
+      const data = await api('/api/passkey/jobs/stop-all', { method: 'POST' });
+      toast(data.stopped ? `Đã dừng ${data.stopped} passkey job.` : 'Không có passkey job đang chạy.');
+    } finally {
+      state.stopPending = false;
+      renderJobs();
+    }
+  }
+
   async function closePasskeyWindows() {
     if (state.closeWindowsPending) return;
     state.closeWindowsPending = true;
@@ -312,7 +329,9 @@
   }
 
   $('passkey-combo-input').addEventListener('input', renderInputCount);
+  window.AccountInput.installPasteNormalizer($('passkey-combo-input'));
   $('launch-passkey-jobs').addEventListener('click', () => launchJobs().catch((error) => toast(error.message, 'error')));
+  $('stop-passkey-jobs').addEventListener('click', () => stopJobs().catch((error) => toast(error.message, 'error')));
   $('clear-passkey-jobs').addEventListener('click', () => clearJobs().catch((error) => toast(error.message, 'error')));
   $('close-passkey-windows').addEventListener('click', () => closePasskeyWindows().catch((error) => toast(error.message, 'error')));
   $('copy-passkey-output').addEventListener('click', () => copyText(state.output).catch((error) => toast(error.message, 'error')));

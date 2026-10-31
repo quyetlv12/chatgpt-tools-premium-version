@@ -159,7 +159,7 @@ class FilteredExportApiTests(unittest.TestCase):
         self.assertNotIn('<dialog id="passkey-workspace"', response.text)
         self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
         self.assertEqual(response.headers["pragma"], "no-cache")
-        self.assertIn("passkey-ui.js?v=1.1.2", response.text)
+        self.assertIn("passkey-ui.js?v=1.1.3", response.text)
 
     def test_dashboard_document_and_assets_are_never_cached(self) -> None:
         for path in ("/", "/assets/index.css", "/assets/app.js"):

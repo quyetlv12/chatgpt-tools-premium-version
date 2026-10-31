@@ -8,7 +8,8 @@
   <title>Shoptaikhoan Tool | Change 2FA</title>
   <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
   <link rel="stylesheet" href="/assets/index.css?v=1.3.0">
-  <link rel="stylesheet" href="/assets/dashboard.css?v=1.5.24">
+  <link rel="stylesheet" href="/assets/dashboard.css?v=1.5.26">
+  <link rel="stylesheet" href="/assets/session-ui.css?v=1.0.0">
 </head>
 <body>
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
@@ -43,6 +44,7 @@
               <code>email|password|2FA_cũ</code>
             </label>
             <div class="editor-tools">
+              <button id="open-session-import" class="editor-tool" type="button" disabled>Nhập session JSON</button>
               <span id="editor-review-state" class="editor-review-state">Paste nhiều dòng sẽ mở từ dòng 1</span>
               <button id="jump-input-top" class="editor-tool" type="button" aria-label="Về dòng đầu của danh sách"><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.1#ti-arrow-bar-to-up"></use></svg><span>Dòng đầu</span></button>
             </div>
@@ -107,6 +109,7 @@
             <button id="export-filtered" class="button export-filtered" disabled title="Xuất dữ liệu của tab đang chọn"><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.1#ti-download"></use></svg><span>Xuất tab</span><b id="export-filtered-count">0</b></button>
             <button id="clear-failed" class="button clear-failed" hidden disabled title="Xóa tài khoản lỗi, giữ lại tài khoản Live"><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.1#ti-trash-x"></use></svg><span>Dọn lỗi</span><b id="clear-failed-count">0</b></button>
             <button id="logout-selected" class="button logout-selected" hidden disabled title="Logout all sessions cho các tài khoản Live đã chọn"><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.2#ti-logout"></use></svg><span>Logout all sessions</span><b id="logout-selected-count">0</b></button>
+            <button id="change-selected" class="button change-selected" hidden disabled title="Đổi 2FA rồi logout tất cả phiên cho các tài khoản đã chọn"><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.4#ti-route"></use></svg><span>Đổi 2FA + Logout</span><b id="change-selected-count">0</b></button>
             <button id="stop-all" class="button danger" hidden disabled><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.1#ti-player-stop"></use></svg><span>Dừng tất cả</span></button>
             <button id="clear-all" class="button ghost" hidden disabled><svg class="ui-icon" aria-hidden="true"><use href="/assets/tabler-icons.svg?v=1.0.1#ti-trash"></use></svg><span>Dọn danh sách</span></button>
           </div>
@@ -410,12 +413,29 @@
     </div>
   </dialog>
 
+  <dialog id="session-import" class="launch-modal session-import-modal" aria-labelledby="session-import-title" aria-describedby="session-import-help">
+    <div class="confirm-accent is-change"><div><small>CHATGPT WEB SESSION</small><h2 id="session-import-title">Đổi 2FA từ session JSON</h2></div></div>
+    <form id="session-import-form" autocomplete="off">
+      <div class="session-import-fields">
+        <p id="session-import-help">Chỉ dùng session ChatGPT Web của tài khoản bạn quản lý. Token Codex OAuth xuất từ 9Router không dùng trực tiếp được. Session không được lưu xuống ổ đĩa; mật khẩu và khóa 2FA mới vẫn lưu trong SQLite như luồng hiện tại.</p>
+        <label>Email tài khoản<input id="session-email" type="email" maxlength="320" required autocomplete="off"></label>
+        <label>Mật khẩu hiện tại<input id="session-password" type="password" maxlength="1024" required autocomplete="new-password"><small>Dùng để đăng nhập lại xác minh khóa mới; không cần khóa 2FA cũ.</small></label>
+        <label>Chọn file JSON (tối đa 128 KB)<input id="session-file" type="file" accept=".json,application/json"></label>
+        <label>Hoặc dán session JSON<textarea id="session-json" rows="6" spellcheck="false" autocomplete="off" autocapitalize="off" required placeholder='{"accessToken":"...","user":{"email":"..."}}'></textarea></label>
+        <label class="session-confirm"><input id="session-confirm" type="checkbox" required><span>Tôi xác nhận thay khóa 2FA tài khoản này. Nếu bị gián đoạn, tôi sẽ kiểm tra trạng thái trước khi nhập lại; tool không tự gửi lại lệnh đổi 2FA.</span></label>
+        <p id="session-import-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="confirm-actions"><button id="close-session-import" class="button ghost" type="button">Đóng</button><button id="submit-session-import" class="button confirm-change" type="submit">Xác nhận đổi 2FA</button></div>
+    </form>
+  </dialog>
   <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
   <script src="/assets/usage-ui.js?v=1.3.9" defer></script>
   <script src="/assets/payment-ui.js?v=1.0.4" defer></script>
   <script src="/assets/realtime-ui.js?v=1.0.0" defer></script>
-  <script src="/assets/app.js?v=1.3.42" defer></script>
+  <script src="/assets/session-ui.js?v=1.0.0" defer></script>
+  <script src="/assets/account-input.js?v=1.0.0" defer></script>
+  <script src="/assets/app.js?v=1.3.49" defer></script>
   <script src="/assets/password-history-ui.js?v=1.0.0" defer></script>
-  <script src="/assets/password-ui.js?v=1.2.2" defer></script>
+  <script src="/assets/password-ui.js?v=1.2.3" defer></script>
 </body>
 </html>

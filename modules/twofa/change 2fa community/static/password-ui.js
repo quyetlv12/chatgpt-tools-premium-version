@@ -398,6 +398,7 @@
   $('close-password-tool').addEventListener('click', () => $('password-workspace').close());
   $('password-workspace').addEventListener('close', closeWorkspace);
   $('password-combo-input').addEventListener('input', renderInputCount);
+  window.AccountInput.installPasteNormalizer($('password-combo-input'));
   $('launch-password-jobs').addEventListener('click', () => launchJobs().catch((error) => toast(error.message, 'error')));
   $('save-target-password').addEventListener('click', () => saveTargetPassword('setting-target-password').catch((error) => toast(error.message, 'error')));
   $('save-workspace-target-password').addEventListener('click', () => saveTargetPassword('password-workspace-target-password').catch((error) => toast(error.message, 'error')));

@@ -207,6 +207,90 @@ def build_web_context_options(window_bounds):
     }
 
 
+_DEVTOOLS_DEVICE_TOOLBAR_CLICK = """(async () => {
+    function findButton(root) {
+        const button = root.querySelector('devtools-button[jslog*="emulation.toggle-device-mode"]');
+        if (button) return button;
+        for (const element of root.querySelectorAll('*')) {
+            if (element.shadowRoot) {
+                const found = findButton(element.shadowRoot);
+                if (found) return found;
+            }
+        }
+    }
+    const UI = await import('./ui/legacy/legacy.js');
+    const deadline = Date.now() + 8000;
+    let clicked = false;
+    while (Date.now() < deadline) {
+        const button = findButton(document);
+        if (button) {
+            const action = UI.ActionRegistry.ActionRegistry.instance().getAction('emulation.toggle-device-mode');
+            if (action.toggled()) return true;
+            if (!clicked && action.enabled()) {
+                button.click();
+                clicked = true;
+            }
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('DevTools Device Toolbar was not ready');
+})()"""
+
+
+def open_web_devtools_device_mode(page):
+    """Click the real Device Toolbar on this tab, independent of OS focus."""
+    target_session = browser_session = None
+    frontend_session = None
+    response = {}
+
+    def receive(event):
+        if event.get("sessionId") == frontend_session:
+            message = json.loads(event["message"])
+            if message.get("id") == 1:
+                response.update(message)
+
+    try:
+        target_session = page.context.new_cdp_session(page)
+        target_id = target_session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+        browser_session = page.context.browser.new_browser_cdp_session()
+        # Global shortcuts can hit another worker's window and crash Brave.
+        frontend_id = browser_session.send("Target.openDevTools", {"targetId": target_id})["targetId"]
+        frontend_session = browser_session.send(
+            "Target.attachToTarget", {"targetId": frontend_id, "flatten": False},
+        )["sessionId"]
+        browser_session.on("Target.receivedMessageFromTarget", receive)
+        browser_session.send("Target.sendMessageToTarget", {
+            "sessionId": frontend_session,
+            "message": json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {
+                "expression": _DEVTOOLS_DEVICE_TOOLBAR_CLICK,
+                "awaitPromise": True, "returnByValue": True,
+            }}),
+        })
+        deadline = time.monotonic() + 12
+        while not response and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        if response.get("result", {}).get("result", {}).get("value") is not True:
+            raise RuntimeError("Device Toolbar chưa sẵn sàng hoặc trình duyệt không hỗ trợ")
+        page.wait_for_function("navigator.maxTouchPoints > 0", timeout=3000)
+        return True
+    except Exception as error:
+        raise RuntimeError("Không thể mở DevTools và bật Device Toolbar") from error
+    finally:
+        try:
+            if browser_session:
+                browser_session.remove_listener("Target.receivedMessageFromTarget", receive)
+                if frontend_session:
+                    browser_session.send("Target.detachFromTarget", {"sessionId": frontend_session})
+        except Exception:
+            pass
+        for session in (target_session, browser_session):
+            if session:
+                try:
+                    session.detach()
+                except Exception:
+                    pass
+
+
 def apply_browser_window_bounds(context, page, bounds):
     """Apply exact native Chrome window bounds through the DevTools protocol."""
     session = None
@@ -1928,11 +2012,13 @@ def login_web_one_account(
     reload_after=None,
     codex_web=False,
     browser_id="auto",
+    mobile_enabled=False,
 ):
     """Run one clean direct-login attempt and retain a successful browser."""
     if codex_web:
         open_link, reload_after = "", None
         browser_id = "auto"
+        mobile_enabled = False
     email, password, totp_secret = account
     workspace_target = workspace_invite_target(open_link)
     active_workspace = {"id": ""}
@@ -2013,7 +2099,14 @@ def login_web_one_account(
         link_opened = False
         link_error = None
         post_login_error = ""
-        if open_link:
+        if mobile_enabled:
+            try:
+                open_web_devtools_device_mode(page)
+                emit_web_phase(email, index, "mobile_ready", "Đã mở DevTools và bật Device Toolbar trên tab chính ChatGPT")
+            except Exception:
+                post_login_error = "mobile_error"
+                emit_web_phase(email, index, "mobile_error", "Không mở được DevTools/Device Toolbar; giữ phiên và chưa mở tab phụ")
+        if open_link and not post_login_error:
             try:
                 emit_web_phase(email, index, "open_link", "Đang mở tab phụ")
                 link_page = context.new_page()
@@ -2219,6 +2312,7 @@ def run_web_login_queue(
     reload_after=None,
     codex_web=False,
     browser_id="auto",
+    mobile_enabled=False,
 ):
     """Retry failed accounts until all succeed while preserving bounded concurrency."""
     if not accounts:
@@ -2268,6 +2362,7 @@ def run_web_login_queue(
                     reload_after=reload_after,
                     codex_web=codex_web,
                     browser_id=browser_id,
+                    mobile_enabled=mobile_enabled,
                 )
             else:
                 result = login_job(*common_args)
@@ -2365,6 +2460,7 @@ def main():
     slow = "--slow" in sys.argv
     codex_web = "--codex-web" in sys.argv
     web_only = "--web-only" in sys.argv or codex_web
+    mobile_enabled = "--mobile" in sys.argv and web_only and not codex_web
     browser_id = "auto"
     if "--browser" in sys.argv:
         try:
@@ -2434,7 +2530,8 @@ def main():
             name="browser-control-listener",
             daemon=True,
         ).start()
-        results = run_web_login_queue(accounts, active_workers, slow, open_link, reload_after=reload_after, codex_web=codex_web, browser_id=browser_id)
+        results = run_web_login_queue(accounts, active_workers, slow, open_link, reload_after=reload_after, codex_web=codex_web,
+                                      browser_id=browser_id, mobile_enabled=mobile_enabled)
     else:
         start_callback_dispatcher()
         try:

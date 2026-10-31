@@ -1,0 +1,11 @@
+.session-import-modal{max-height:calc(100dvh - 32px);overflow:auto}
+.session-import-fields{display:grid;gap:14px;padding:18px 24px}
+.session-import-fields p{margin:0;color:#c2dbe6;font-size:.8rem;line-height:1.6}
+.session-import-fields label{display:grid;gap:7px;font-size:.8rem;font-weight:700}
+.session-import-fields input:not([type=checkbox]),.session-import-fields textarea{box-sizing:border-box;width:100%;min-width:0;padding:10px 12px;border:1px solid var(--line-strong);border-radius:9px;background:#0a263b;color:var(--text);font:inherit}
+.session-import-fields textarea{resize:vertical;font-family:monospace}
+.session-import-fields small{color:#9fc3d2;font-size:.72rem;font-weight:400;line-height:1.5}
+.session-import-fields .session-confirm{display:flex;align-items:flex-start;gap:10px;font-weight:400;line-height:1.6}
+.session-confirm input{flex:none;margin-top:4px}
+#session-import-status{color:#ffbea7;overflow-wrap:anywhere}
+@media(max-width:680px){.session-import-fields{padding:16px 17px}}

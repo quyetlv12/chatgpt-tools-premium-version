@@ -2332,11 +2332,20 @@
     <form method="dialog">
       <div class="modal-header">
         <div>
-          <h3 id="web-login-reload-title">Tự động reload tab ChatGPT</h3>
+          <h3 id="web-login-reload-title">Tùy chọn trước khi chạy</h3>
         </div>
         <button class="modal-close" type="button" value="cancel" onclick="this.closest('dialog').close()" aria-label="Hủy lần chạy">&times;</button>
       </div>
       <div class="modal-body">
+        <div class="field-label-row">
+          <label class="field-label" for="web-login-mobile-toggle">Chế độ mobile (DevTools)</label>
+          <label class="feature-toggle" for="web-login-mobile-toggle">
+            <input type="checkbox" id="web-login-mobile-toggle" checked aria-label="Bật hoặc tắt chế độ mobile trên tab chính ChatGPT" aria-describedby="web-login-mobile-help" />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span id="web-login-mobile-toggle-text">Bật</span>
+          </label>
+        </div>
+        <div class="field-help" id="web-login-mobile-help">Mặc định bật mỗi lần chạy. Sau đăng nhập, tự mở DevTools thật và bật nút Device Toolbar trên tab chính ChatGPT trước khi mở tab phụ; không đổi kích thước cửa sổ để giả mobile.</div>
         <div class="field-label-row">
           <label class="field-label" for="web-login-reload-toggle">Tự động reload</label>
           <label class="feature-toggle" for="web-login-reload-toggle">
@@ -3169,13 +3178,32 @@
         $('web-login-reload-seconds').disabled = !enabled;
         $('web-login-reload-toggle-text').textContent = enabled ? 'Bật' : 'Tắt';
       }
+      function syncWebLoginMobileToggle() {
+        $('web-login-mobile-toggle-text').textContent = $('web-login-mobile-toggle').checked ? 'Bật' : 'Tắt';
+      }
+      syncWebLoginMobileToggle();
+      $('web-login-mobile-toggle').addEventListener('change', syncWebLoginMobileToggle);
       syncWebLoginReloadToggle();
       $('web-login-reload-toggle').addEventListener('change', syncWebLoginReloadToggle);
 
-      function askWebLoginReloadSettings() {
+      function askWebLoginReloadSettings(linkSettings = {}) {
         const dialog = $('web-login-reload-dialog');
         if (dialog.open) return Promise.resolve(null);
-        $('web-login-reload-toggle').checked = false;
+        let k12Invite = false;
+        if (linkSettings.openLinkEnabled && linkSettings.linkUrl) {
+          try {
+            const url = new URL(linkSettings.linkUrl);
+            k12Invite = url.origin === 'https://chatgpt.com' && !url.username && !url.password
+              && /^\/k12-invite\/?$/.test(url.pathname);
+          } catch {}
+        }
+        $('web-login-reload-toggle').checked = k12Invite;
+        $('web-login-mobile-toggle').checked = true;
+        if (k12Invite) $('web-login-reload-seconds').value = '10';
+        $('web-login-reload-help').textContent = k12Invite
+          ? 'Đã nhận diện link K12 invite: tự bật reload 10 giây và mobile. Có thể chỉnh trước khi chạy.'
+          : 'Mặc định tắt. Chỉ áp dụng cho lần chạy này.';
+        syncWebLoginMobileToggle();
         syncWebLoginReloadToggle();
         dialog.returnValue = '';
         return new Promise(resolve => {
@@ -3183,6 +3211,7 @@
             resolve(dialog.returnValue === 'start' ? {
               reloadEnabled: $('web-login-reload-toggle').checked,
               reloadSeconds: Number($('web-login-reload-seconds').value),
+              mobileEnabled: $('web-login-mobile-toggle').checked,
             } : null);
           }, { once: true });
           dialog.showModal();
@@ -3279,7 +3308,7 @@
             if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
           } catch { showMsg('web-login-msg', 'Link phải bắt đầu bằng http:// hoặc https://.', 'err'); return }
         }
-        const reloadSettings = await askWebLoginReloadSettings();
+        const reloadSettings = await askWebLoginReloadSettings(linkSettings);
         if (!reloadSettings) return;
         $('btn-web-login').disabled = true;
         $('btn-web-login').textContent = 'Đang mở trình duyệt...';
@@ -3516,6 +3545,7 @@
           const postLoginError = result.postLoginError || '';
           const flowErrorLabel = {
             link_error: 'tab phụ chưa tải xong',
+            mobile_error: 'chưa bật được mobile; chưa mở tab phụ',
             main_tab_error: 'không quay lại được tab chính',
             reload_error: 'reload tab chính thất bại',
             tabs_closed: 'đã dừng kiểm tra vì tab hoặc Chrome đã đóng',
@@ -3599,6 +3629,7 @@
           const statusLabel = success
             ? ({
                 link_error: 'tab phụ chưa tải xong',
+                mobile_error: 'chưa bật được mobile; chưa mở tab phụ',
                 main_tab_error: 'không quay lại được tab chính',
                 reload_error: 'reload tab chính thất bại',
                 tabs_closed: 'đã dừng kiểm tra vì tab hoặc Chrome đã đóng',

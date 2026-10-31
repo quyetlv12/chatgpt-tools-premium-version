@@ -1015,12 +1015,14 @@ def build_auto_login_command(accounts_file, workers):
     ]
 
 
-def build_web_login_command(accounts_file, workers, link_url="", reload_after=None, codex_web=False, browser_id="auto"):
+def build_web_login_command(accounts_file, workers, link_url="", reload_after=None, codex_web=False, browser_id="auto", mobile_enabled=False):
     """Build direct web-login arguments, omitting the secondary-tab flag when disabled."""
     args = build_auto_login_command(accounts_file, workers)
     args.extend(["--headed", "--web-only"])
     if codex_web:
         return args + ["--codex-web"]
+    if mobile_enabled:
+        args.append("--mobile")
     if link_url:
         args.extend(["--open-link", link_url])
     if reload_after is not None:
@@ -1224,7 +1226,7 @@ def start_auto_login(accounts, headed=True, workers=3):
     thread.start()
 
 
-def _web_login_worker(accounts, workers=3, link_url="", run_id=None, reload_after=None, codex_web=False, browser_id="auto"):
+def _web_login_worker(accounts, workers=3, link_url="", run_id=None, reload_after=None, codex_web=False, browser_id="auto", mobile_enabled=False):
     """Run direct ChatGPT web login independently from Codex OAuth/import."""
     global _web_login_status, _web_login_proc
     import subprocess
@@ -1255,7 +1257,8 @@ def _web_login_worker(accounts, workers=3, link_url="", run_id=None, reload_afte
         "Bắt đầu phiên với {} tài khoản, tối đa {} luồng".format(len(accounts), active_workers),
         status=status,
     )
-    args = build_web_login_command(tmp_file, workers, link_url, reload_after=reload_after, codex_web=codex_web, browser_id=browser_id)
+    args = build_web_login_command(tmp_file, workers, link_url, reload_after=reload_after, codex_web=codex_web,
+                                   browser_id=browser_id, mobile_enabled=mobile_enabled)
     try:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -1352,7 +1355,7 @@ def _web_login_worker(accounts, workers=3, link_url="", run_id=None, reload_afte
                 phase_stage = metadata.get("stage", "")
                 if phase_stage in ("personal_account_verified", "workspace_verified"):
                     phase_level = "success"
-                elif phase_stage in ("manual_check", "link_error", "reload_error", "personal_account_unverified", "workspace_unverified"):
+                elif phase_stage in ("manual_check", "link_error", "reload_error", "mobile_error", "personal_account_unverified", "workspace_unverified"):
                     phase_level = "warning"
                 else:
                     phase_level = "info"
@@ -1452,6 +1455,7 @@ def _web_login_worker(accounts, workers=3, link_url="", run_id=None, reload_afte
                             "Đã vào ChatGPT · {}"
                             .format({
                                 "link_error": "tab phụ chưa tải xong",
+                                "mobile_error": "chưa bật được mobile; chưa mở tab phụ",
                                 "main_tab_error": "không quay lại được tab chính",
                                 "reload_error": "reload tab chính thất bại",
                                 "tabs_closed": "đã dừng kiểm tra vì tab hoặc Chrome đã đóng",
@@ -1534,7 +1538,7 @@ def finalize_web_login_status(status, proc=None):
     return is_current
 
 
-def start_web_login(accounts, workers=3, link_url="", reload_after=None, codex_web=False, browser_id="auto"):
+def start_web_login(accounts, workers=3, link_url="", reload_after=None, codex_web=False, browser_id="auto", mobile_enabled=False):
     global _web_login_status
     if not codex_web:
         browser_launch_options(browser_id)
@@ -1549,7 +1553,8 @@ def start_web_login(accounts, workers=3, link_url="", reload_after=None, codex_w
         status = _web_login_status
     persist_web_login_status(status, current_only=True)
     thread = threading.Thread(target=_web_login_worker, args=(accounts, workers, link_url, run_id),
-                              kwargs={"reload_after": reload_after, "codex_web": codex_web, "browser_id": browser_id}, daemon=True)
+                              kwargs={"reload_after": reload_after, "codex_web": codex_web,
+                                      "browser_id": browser_id, "mobile_enabled": mobile_enabled}, daemon=True)
     thread.start()
     return True
 
@@ -2130,6 +2135,9 @@ class Handler(SimpleHTTPRequestHandler):
                 try:
                     link_url = "" if codex_web else resolve_web_login_link(data)
                     reload_after = None if codex_web else resolve_web_login_reload(data)
+                    mobile_enabled = False if codex_web else data.get("mobileEnabled", False)
+                    if not isinstance(mobile_enabled, bool):
+                        raise ValueError("mobileEnabled phải là true hoặc false")
                     browser_id = "auto" if codex_web else data.get("browser", "auto")
                     if not codex_web:
                         browser_launch_options(browser_id)
@@ -2137,7 +2145,7 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json({"error": str(error)}, 400)
                     return
                 if not start_web_login(accounts, workers=workers, link_url=link_url, reload_after=reload_after, codex_web=codex_web,
-                                       **({} if codex_web else {"browser_id": browser_id})):
+                                       **({} if codex_web else {"browser_id": browser_id, "mobile_enabled": mobile_enabled})):
                     self._json({"error": "Đang có phiên ChatGPT Web hoặc Codex Web; không thay thế phiên đang mở"}, 409)
                     return
                 with _web_login_lock:

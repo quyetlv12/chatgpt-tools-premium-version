@@ -7,19 +7,24 @@ const root = path.join(__dirname, '../change 2fa community/static');
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'dashboard.css'), 'utf8');
-for (const id of ['retry-failed', 'clear-failed', 'logout-selected', 'stop-all', 'clear-all']) {
+for (const id of ['retry-failed', 'clear-failed', 'logout-selected', 'change-selected', 'stop-all', 'clear-all']) {
   assert.match(html, new RegExp(`id="${id}"[^>]* hidden`), 'hidden before bootstrap');
 }
 assert.match(css, /\.queue-tools \.button\[hidden\]\{display:none\}/);
 const nodes = new Map();
 const $ = id => {
-  if (!nodes.has(id)) nodes.set(id, { setAttribute() {} });
+  if (!nodes.has(id)) {
+    const label = {};
+    nodes.set(id, { setAttribute() {}, querySelector() { return label; } });
+  }
   return nodes.get(id);
 };
-const state = { jobs: new Map(), selectedLogoutJobIds: new Set(), pendingRechecks: new Set(), pendingRowChangeResults: new Set(), logoutPending: false, clearAllPending: false };
+const state = { jobs: new Map(), selectedLogoutJobIds: new Set(), pendingRechecks: new Set(), pendingRowChangeResults: new Set(), combinedStartingJobIds: new Set(), pendingBulkCombinedJobIds: [], bulkCombinedPending: false, logoutPending: false, clearAllPending: false };
 let archived = false;
 const context = { state, $, window: {}, isJournalView: () => archived,
   displayedJobs: () => [...state.jobs.values()],
+  isCombinedEligible: job => job.mode === 'check_only' && job.status === 'success' && job.account_state === 'live' && job.login_verified && !job.rotated_pending_verify,
+  isCombinedBusy: job => Boolean(job.combined_busy),
   isLoggingOut: job => Boolean(job.sessions_logging_out),
   isPasskeyPreparing: job => Boolean(job.passkey_preparing) };
 vm.createContext(context);
@@ -78,7 +83,7 @@ state.jobs.get('error').retryable = true;
 render();
 assert.equal($('retry-failed').hidden, false);
 state.jobs.clear();
-const live = { id: 'live', status: 'success', account_state: 'live' };
+const live = { id: 'live', status: 'success', account_state: 'live', mode: 'check_only', login_verified: true };
 state.jobs.set(live.id, live);
 render();
 assert.equal($('retry-failed').hidden, true);
@@ -88,6 +93,41 @@ state.selectedLogoutJobIds.add(live.id);
 render();
 assert.equal($('logout-selected').hidden, false);
 assert.equal($('logout-selected').disabled, false);
+assert.equal($('change-selected').hidden, false, 'show combined action for selected verified check-only Live rows');
+assert.equal($('change-selected').disabled, false);
+assert.equal($('change-selected').querySelector('span').textContent, 'Đổi 2FA + Logout');
+for (const flag of ['rotated_pending_verify', 'combined_busy']) {
+  live[flag] = true;
+  render();
+  assert.equal($('change-selected').hidden, true, `${flag} blocks combined start`);
+  live[flag] = false;
+}
+live.login_verified = false;
+render();
+assert.equal($('change-selected').hidden, true, 'unverified login cannot start combined');
+live.login_verified = true;
+state.jobs.set('unverified', { ...live, id: 'unverified', login_verified: false });
+state.selectedLogoutJobIds.add('unverified');
+render();
+assert.equal($('change-selected').hidden, false);
+assert.equal($('change-selected').disabled, true, 'mixed selection cannot partially start');
+state.selectedLogoutJobIds.delete('unverified');
+state.jobs.delete('unverified');
+state.bulkCombinedPending = true;
+state.pendingBulkCombinedJobIds = ['live'];
+state.selectedLogoutJobIds.clear();
+render();
+assert.equal($('change-selected').hidden, false, 'pending action stays visible while SSE prunes selection');
+assert.equal($('change-selected').disabled, true);
+assert.equal($('change-selected-count').textContent, 1);
+assert.equal($('select-all-logout').disabled, true);
+archived = true;
+render();
+assert.equal($('change-selected').hidden, true, 'archive hides pending combined control');
+archived = false;
+state.bulkCombinedPending = false;
+state.pendingBulkCombinedJobIds = [];
+state.selectedLogoutJobIds.add(live.id);
 state.logoutPending = true;
 live.sessions_logging_out = true;
 render();

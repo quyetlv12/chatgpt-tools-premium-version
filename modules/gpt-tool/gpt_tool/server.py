@@ -20,6 +20,7 @@ from urllib.parse import urlencode, urlparse
 from gpt_tool.convert import FORMATS
 from gpt_tool.export import convert_bulk, export_bulk, outcome_dict
 from gpt_tool.redaction import redact
+from gpt_tool import sub2api_config
 
 def _module_root(module_file: Path, *, compiled: bool) -> Path:
     return module_file.parent if compiled else module_file.parent.parent
@@ -52,6 +53,8 @@ _job_cancellations: dict[str, threading.Event] = {}
 _cockpit_imports: dict[str, list[object]] = {}
 _lock = threading.Lock()
 MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
+SUB2API_IMPORT_PATH = "/api/v1/admin/accounts/import/codex-session"
+MAX_SUB2API_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class ArtifactError(ValueError):
@@ -103,7 +106,7 @@ def _public_job(job: dict) -> dict:
         item = {
             key: value
             for key, value in result.items()
-            if key not in {"path", "cockpit_payload", "nine_router_payload"}
+            if key not in {"path", "cockpit_payload", "nine_router_payload", "sub2api_payload"}
         }
         item["copyable"] = bool(result.get("ok") and result.get("path"))
         public["results"].append(item)
@@ -242,6 +245,115 @@ def _send_job_to_nine_router(job_id: str) -> None:
             job["nine_router"]["error"] = f"9Router: {failed} tài khoản thêm thất bại"
 
 
+class _NoRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _sub2api_import_endpoint(base_url: str) -> str:
+    raw = str(base_url or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL Sub2API phải bắt đầu bằng http:// hoặc https://")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("URL Sub2API không được chứa tài khoản, query hoặc fragment")
+    hostname = parsed.hostname.lower()
+    if parsed.scheme == "http" and hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("Sub2API từ xa phải dùng HTTPS để bảo vệ Admin API Key")
+    prefix = parsed.path.rstrip("/")
+    path = prefix if prefix.endswith(SUB2API_IMPORT_PATH) else prefix + SUB2API_IMPORT_PATH
+    return parsed._replace(path=path, params="", query="", fragment="").geturl()
+
+
+def _import_sub2api(bundle: list[object], base_url: str, api_key: str) -> dict:
+    endpoint = _sub2api_import_endpoint(base_url)
+    key = str(api_key or "").strip()
+    if not key:
+        raise ValueError("Nhập Admin API Key của Sub2API")
+    if any(ord(char) < 32 or ord(char) == 127 for char in key):
+        raise ValueError("Admin API Key của Sub2API chứa ký tự không hợp lệ")
+    body = json.dumps(
+        {
+            "contents": [json.dumps(item, ensure_ascii=False) for item in bundle],
+            "update_existing": True,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "x-api-key": key},
+    )
+    try:
+        opener = request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=15) as response:
+            raw = response.read(MAX_SUB2API_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_SUB2API_RESPONSE_BYTES:
+                raise RuntimeError("Sub2API trả về dữ liệu quá lớn")
+            result = json.loads(raw.decode("utf-8"))
+    except error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise RuntimeError("Sub2API từ chối Admin API Key") from exc
+        raise RuntimeError(f"Sub2API từ chối yêu cầu (HTTP {exc.code})") from exc
+    except (error.URLError, TimeoutError) as exc:
+        raise RuntimeError("Không kết nối được tới Sub2API") from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Sub2API trả về dữ liệu không hợp lệ") from exc
+    data = result.get("data") if isinstance(result, dict) else None
+    if (
+        not isinstance(result, dict)
+        or result.get("code") != 0
+        or not isinstance(data, dict)
+        or not isinstance(data.get("items"), list)
+    ):
+        raise RuntimeError("Sub2API trả về dữ liệu không hợp lệ")
+    return result
+
+
+def _send_job_to_sub2api(job_id: str, base_url: str, api_key: str) -> None:
+    with _lock:
+        job = _jobs[job_id]
+        targets = [
+            item
+            for item in job.get("results") or []
+            if item.get("ok") and item.get("sub2api_payload")
+        ]
+    targets.sort(key=lambda item: item.get("index") if item.get("index") is not None else 10**9)
+    if not targets:
+        return
+    try:
+        response = _import_sub2api([item["sub2api_payload"] for item in targets], base_url, api_key)
+    except Exception as exc:
+        message = redact(str(exc))
+        with _lock:
+            job["sub2api"].update(error=message, sent=False)
+            for item in targets:
+                item["sub2api_error"] = message
+        return
+
+    api_results = {
+        item.get("index"): item
+        for item in response["data"]["items"]
+        if isinstance(item, dict) and isinstance(item.get("index"), int)
+    }
+    successful_actions = {"created", "updated", "skipped"}
+    with _lock:
+        for api_index, item in enumerate(targets, start=1):
+            imported = api_results.get(api_index, {})
+            action = str(imported.get("action") or "").lower()
+            if action in successful_actions:
+                item["sub2api_sent"] = True
+                item["sub2api_action"] = action
+            else:
+                item["sub2api_error"] = "Không thể nhập tài khoản vào Sub2API"
+        success = sum(1 for item in targets if item.get("sub2api_sent"))
+        failed = len(targets) - success
+        job["sub2api"].update(count=success, failed=failed, sent=success > 0)
+        if failed:
+            job["sub2api"]["error"] = f"Sub2API: {failed} tài khoản nhập thất bại"
+
+
 def _completed_job(outcomes: list) -> dict:
     results = []
     for index, outcome in enumerate(outcomes):
@@ -284,6 +396,14 @@ def _origin_allowed(handler: BaseHTTPRequestHandler) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _config_allowed(self) -> bool:
+        expected = urlparse(PUBLIC_URL).netloc if PUBLIC_URL else f"127.0.0.1:{self.server.server_address[1]}"
+        hosts = {expected, urlparse(PUBLIC_URL).hostname} if PUBLIC_URL else {expected, expected.replace("127.0.0.1", "localhost")}
+        return _origin_allowed(self) and self.headers.get("Host") in hosts
+
+    def _config_status(self, config: dict) -> dict:
+        return {"url": config.get("url", ""), "has_api_key": bool(config.get("api_key")), "supported": sub2api_config.SUPPORTED}
+
     def log_message(self, fmt: str, *args) -> None:
         if sys.stderr is not None:
             message = re.sub(r"/api/cockpit/[A-Za-z0-9_-]+", "/api/cockpit/[redacted]", fmt % args)
@@ -291,6 +411,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/sub2api/config":
+            if not self._config_allowed():
+                _json(self, 403, {"error": "forbidden"})
+                return
+            try:
+                config = sub2api_config.load() if sub2api_config.SUPPORTED else {}
+                _json(self, 200, self._config_status(config))
+            except sub2api_config.ConfigError as exc:
+                _json(self, 503, {"error": str(exc)})
+            return
         if path.startswith("/api/cockpit/"):
             bundle = _take_cockpit_import(path.rsplit("/", 1)[-1])
             if bundle is None:
@@ -341,6 +471,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/sub2api/config":
+            if not self._config_allowed() or self.headers.get_content_type() != "application/json":
+                _json(self, 403, {"error": "forbidden"})
+                return
+            try:
+                if not 0 < int(self.headers.get("Content-Length", "0")) <= 16384:
+                    raise ValueError("Cấu hình quá lớn hoặc rỗng")
+                body = _read_json(self)
+                if not isinstance(body, dict):
+                    raise ValueError("Cấu hình không hợp lệ")
+                if body.get("action") == "clear":
+                    sub2api_config.clear()
+                    config = {}
+                elif body.get("action") == "save":
+                    url, key = body.get("url"), body.get("api_key")
+                    if not isinstance(url, str) or not isinstance(key, str) or not key.strip():
+                        raise ValueError("Nhập URL và Admin API Key trước khi lưu")
+                    url, key = url.strip().rstrip("/"), key.strip()
+                    _sub2api_import_endpoint(url)
+                    sub2api_config.save(url, key)
+                    config = {"url": url, "api_key": key}
+                else:
+                    raise ValueError("Thao tác cấu hình không hợp lệ")
+                _json(self, 200, self._config_status(config))
+            except sub2api_config.ConfigError as exc:
+                _json(self, 503, {"error": str(exc)})
+            except (ValueError, UnicodeError):
+                _json(self, 400, {"error": "Cấu hình không hợp lệ. Nhập URL hợp lệ và Admin API Key để lưu."})
+            return
         if path == "/api/shutdown":
             if not _origin_allowed(self):
                 _json(self, 403, {"error": "forbidden"})
@@ -363,6 +522,9 @@ class Handler(BaseHTTPRequestHandler):
                 _json(self, 404, {"error": "job not found"})
                 return
             _json(self, 200, {"ok": True})
+            return
+        if path == "/api/export" and not _origin_allowed(self):
+            _json(self, 403, {"error": "forbidden"})
             return
         try:
             body = _read_json(self)
@@ -402,6 +564,26 @@ class Handler(BaseHTTPRequestHandler):
             workers = max(1, min(8, int(body.get("workers") or 2)))
             cockpit_import = body.get("cockpit_import") is True
             nine_router_import = body.get("nine_router_import") is True
+            sub2api_import = fmt == "sub2api" and body.get("sub2api_import") is True
+            sub2api_url = str(body.get("sub2api_url") or "").strip()
+            sub2api_api_key = str(body.get("sub2api_api_key") or "").strip()
+            if sub2api_import:
+                try:
+                    _sub2api_import_endpoint(sub2api_url)
+                    if not sub2api_api_key and body.get("sub2api_use_saved") is True:
+                        if not self._config_allowed() or self.headers.get_content_type() != "application/json":
+                            _json(self, 403, {"error": "forbidden"})
+                            return
+                        config = sub2api_config.load()
+                        if config.get("url") != sub2api_url.rstrip("/"):
+                            raise ValueError("URL khác cấu hình đã lưu. Hãy nhập API Key cho URL này.")
+                        sub2api_api_key = config.get("api_key", "")
+                except ValueError as exc:
+                    _json(self, 400, {"error": str(exc)})
+                    return
+                if not sub2api_api_key:
+                    _json(self, 400, {"error": "Nhập Admin API Key của Sub2API"})
+                    return
             job_id = uuid.uuid4().hex[:12]
             jobs = [ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]
             base_url = PUBLIC_URL or f"http://{HOST}:{self.server.server_address[1]}"
@@ -420,6 +602,13 @@ class Handler(BaseHTTPRequestHandler):
                     "cockpit": {"enabled": cockpit_import, "sent": False, "count": 0, "error": None},
                     "nine_router": {
                         "enabled": nine_router_import,
+                        "sent": False,
+                        "count": 0,
+                        "failed": 0,
+                        "error": None,
+                    },
+                    "sub2api": {
+                        "enabled": sub2api_import,
                         "sent": False,
                         "count": 0,
                         "failed": 0,
@@ -453,12 +642,15 @@ class Handler(BaseHTTPRequestHandler):
                         on_step,
                         cockpit_import=cockpit_import,
                         nine_router_import=nine_router_import,
+                        sub2api_import=sub2api_import,
                         cancel_event=cancel_event,
                     )
                     if cockpit_import and not cancel_event.is_set():
                         _send_job_to_cockpit(job_id, base_url)
                     if nine_router_import and not cancel_event.is_set():
                         _send_job_to_nine_router(job_id)
+                    if sub2api_import and not cancel_event.is_set():
+                        _send_job_to_sub2api(job_id, sub2api_url, sub2api_api_key)
                 except Exception as exc:
                     with _lock:
                         _jobs[job_id]["error"] = str(exc)

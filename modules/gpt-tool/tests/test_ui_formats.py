@@ -15,6 +15,7 @@ def test_ui_keeps_three_formats_and_defaults_to_cockpit() -> None:
     assert 'const defaultFormat = FORMATS.some(([id]) => id === prefs.format) ? prefs.format : "cockpit";' in source
     assert 'cockpit_import: format === "cockpit" && importEnabled' in source
     assert 'nine_router_import: format === "9router" && importEnabled' in source
+    assert 'sub2api_import: format === "sub2api" && importEnabled' in source
     assert 'id="auto-import"' in html
     assert 'autoImport: document.getElementById("auto-import").checked' in source
     assert 'document.getElementById("auto-import").checked = prefs.autoImport !== false;' in source
@@ -28,7 +29,17 @@ def test_selected_format_confirmation_changes_by_destination() -> None:
 
     assert 'id="format-confirmation"' in html
     assert 'id="format-confirmation-text"' in html
-    assert 'sub2api: "Xuất JSON sub2api"' in source
+    assert 'sub2api: "Tự nhập vào Sub2API"' in source
     assert 'cockpit: "Tự nhập vào Cockpit"' in source
     assert '"9router": "Tự thêm vào 9Router"' in source
     assert "updateFormatConfirmation();" in source
+
+
+def test_sub2api_credentials_have_dedicated_non_persistent_inputs() -> None:
+    source = (Path(__file__).parents[1] / "web" / "app.js").read_text(encoding="utf-8")
+    html = (Path(__file__).parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="sub2api-url"' in html
+    assert 'type="password" id="sub2api-api-key"' in html
+    assert 'sub2apiUrl: document.getElementById("sub2api-url").value.trim()' in source
+    assert "sub2apiApiKey:" not in source.split("function clampWorkers", 1)[0]

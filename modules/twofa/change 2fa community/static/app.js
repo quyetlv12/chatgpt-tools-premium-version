@@ -1,11 +1,11 @@
 (() => {
   'use strict';
 
-  const state = { token: '', jobs: new Map(), filter: 'all', settings: {}, workerHealth: null, connection: 'offline', events: null, eventBatcher: null, output: '', draftTimer: null, pendingLaunch: null, pendingChangeJobId: null, pendingDeleteChatsJobId: null, selectedLogoutJobIds: new Set(), pendingLogoutJobIds: [], pendingPasskeyJobId: null, passkeyPreparing: false, passkeyWindow: null, logoutPending: false, pendingRowChangeResults: new Set(), pendingRechecks: new Set(), activeChangeResultJobId: null, twofaHistory: [], clearAllPending: false };
+  const state = { token: '', jobs: new Map(), filter: 'all', settings: {}, workerHealth: null, connection: 'offline', events: null, eventBatcher: null, output: '', draftTimer: null, pendingLaunch: null, pendingChangeJobId: null, pendingDeleteChatsJobId: null, selectedLogoutJobIds: new Set(), pendingLogoutJobIds: [], pendingBulkCombinedJobIds: [], pendingPasskeyJobId: null, passkeyPreparing: false, passkeyWindow: null, combinedOperations: new Map(), combinedStartingJobIds: new Set(), combinedStoppingOperationIds: new Set(), combinedPollTimers: new Map(), logoutPending: false, bulkCombinedPending: false, pendingRowChangeResults: new Set(), pendingRechecks: new Set(), activeChangeResultJobId: null, twofaHistory: [], clearAllPending: false };
   const LAUNCH_REQUEST_TIMEOUT_MS = 15000;
   Object.assign(state, { journals: [], journal: null, journalChoice: '', journalLoading: false, journalSaving: false, journalRequestVersion: 0 });
   const $ = (id) => document.getElementById(id);
-  const icon = (name) => `<svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/assets/tabler-icons.svg?v=1.0.3#ti-${name}"></use></svg>`;
+  const icon = (name) => `<svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/assets/tabler-icons.svg?v=1.0.4#ti-${name}"></use></svg>`;
   const statusLabels = { queued: 'ĐANG CHỜ', running: 'ĐANG CHẠY', success: 'THÀNH CÔNG', error: 'LỖI', cancelled: 'ĐÃ DỪNG' };
   const errorLabels = {
     account_die: 'TÀI KHOẢN DIE',
@@ -217,8 +217,8 @@
     const pastedText = event.clipboardData?.getData('text') || '';
     if (!pastedText.includes('\n')) return;
     requestAnimationFrame(() => {
-      scrollEditorToTop(true);
-      requestAnimationFrame(() => scrollEditorToTop(true));
+      scrollEditorToTop();
+      requestAnimationFrame(() => scrollEditorToTop());
     });
   }
 
@@ -412,6 +412,19 @@
       && !isPasskeyPreparing(job);
   }
 
+  function isBulkCombinedEligible(job) {
+    return Boolean(job)
+      && isCombinedEligible(job)
+      && !job.chat_deleting
+      && !job.usage_refreshing
+      && !isLoggingOut(job)
+      && !isPasskeyPreparing(job)
+      && !isCombinedBusy(job)
+      && !state.combinedStartingJobIds.has(job.id)
+      && !state.pendingRechecks.has(job.id)
+      && !state.pendingRowChangeResults.has(job.id);
+  }
+
   function pruneLogoutSelection() {
     state.selectedLogoutJobIds.forEach((id) => {
       if (!isLogoutEligible(state.jobs.get(id))) state.selectedLogoutJobIds.delete(id);
@@ -422,15 +435,26 @@
     const eligibleVisibleJobs = visibleJobs.filter(isLogoutEligible);
     const selectedVisibleCount = eligibleVisibleJobs.filter((job) => state.selectedLogoutJobIds.has(job.id)).length;
     const selectAll = $('select-all-logout');
-    selectAll.disabled = isJournalView() || state.logoutPending || eligibleVisibleJobs.length === 0;
+    selectAll.disabled = isJournalView() || state.logoutPending || state.bulkCombinedPending || eligibleVisibleJobs.length === 0;
     selectAll.checked = eligibleVisibleJobs.length > 0 && selectedVisibleCount === eligibleVisibleJobs.length;
     selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < eligibleVisibleJobs.length;
 
     const selectedCount = state.selectedLogoutJobIds.size;
     $('logout-selected-count').textContent = selectedCount;
     $('logout-selected').hidden = isJournalView() || selectedCount === 0;
-    $('logout-selected').disabled = isJournalView() || state.logoutPending || selectedCount === 0;
+    $('logout-selected').disabled = isJournalView() || state.logoutPending || state.bulkCombinedPending || selectedCount === 0;
     $('logout-selected').setAttribute('aria-busy', String(state.logoutPending));
+
+    const selectedChangeCount = [...state.selectedLogoutJobIds]
+      .map((id) => state.jobs.get(id))
+      .filter(isBulkCombinedEligible).length;
+    const changeSelected = $('change-selected');
+    changeSelected.hidden = isJournalView() || (!state.bulkCombinedPending && selectedChangeCount === 0);
+    changeSelected.disabled = isJournalView() || state.bulkCombinedPending || state.logoutPending
+      || selectedCount === 0 || selectedChangeCount !== selectedCount;
+    changeSelected.setAttribute('aria-busy', String(state.bulkCombinedPending));
+    changeSelected.querySelector('span').textContent = state.bulkCombinedPending ? 'Đang bắt đầu…' : 'Đổi 2FA + Logout';
+    $('change-selected-count').textContent = state.bulkCombinedPending ? state.pendingBulkCombinedJobIds.length : selectedChangeCount;
   }
 
   function render() {
@@ -460,18 +484,30 @@
       const canRetry = ['error', 'cancelled'].includes(job.status) && job.retryable !== false;
       const canStop = ['queued', 'running'].includes(job.status);
       const canChangeTwoFA = isRowChangeEligible(job);
+      const activeCombined = activeCombinedOperation(job);
+      const combinedStarting = state.combinedStartingJobIds.has(job.id);
+      const combinedStopping = Boolean(activeCombined && state.combinedStoppingOperationIds.has(activeCombined.id));
+      const combinedPending = combinedStarting || combinedStopping;
+      const canCombine = isCombinedEligible(job) || Boolean(activeCombined) || combinedStarting;
       const canRecheck = job.status === 'success';
       const canDeleteChats = job.status === 'success' && job.account_state === 'live';
       const recheckPending = state.pendingRechecks.has(job.id);
       const chatDeleting = job.chat_deleting === true;
       const loggingOut = isLoggingOut(job);
       const passkeyPreparing = isPasskeyPreparing(job);
-      const accountBusy = chatDeleting || loggingOut || passkeyPreparing;
+      const accountBusy = chatDeleting || loggingOut || passkeyPreparing || isCombinedBusy(job) || combinedStarting;
       const canSelectLogout = !readOnly && isLogoutEligible(job);
       const logoutSelected = state.selectedLogoutJobIds.has(job.id);
+      const combinedTitle = activeCombined ? 'Dừng luồng gộp' : 'Đổi 2FA → Logout tất cả phiên';
+      const combinedAria = activeCombined
+        ? `Dừng luồng gộp của ${escapeHtml(job.email)}`
+        : `Đổi 2FA rồi logout tất cả phiên của ${escapeHtml(job.email)}`;
+      const combinedIcon = activeCombined ? 'player-stop' : combinedStarting ? 'loader-2' : 'route';
+      const combinedDisabled = combinedPending
+        || (!activeCombined && (accountBusy || job.usage_refreshing || recheckPending));
       return `<tr data-id="${job.id}" title="${escapeHtml(job.error || '')}">
-        <td class="logout-select-cell"><input type="checkbox" data-logout-select aria-label="Chọn ${escapeHtml(job.email)} để logout tất cả phiên" ${logoutSelected ? 'checked' : ''} ${canSelectLogout && !state.logoutPending ? '' : 'disabled'}></td>
-        <td class="account"><strong>${escapeHtml(job.email)}</strong><span>${job.id.slice(0, 10).toUpperCase()} · <b class="job-mode ${job.mode === 'check_only' ? 'check' : 'change'}">${job.mode === 'check_only' ? 'CHỈ CHECK' : 'ĐỔI 2FA'}</b></span></td>
+        <td class="logout-select-cell"><input type="checkbox" data-logout-select aria-label="Chọn ${escapeHtml(job.email)} để thao tác hàng loạt" ${logoutSelected ? 'checked' : ''} ${canSelectLogout && !state.logoutPending && !state.bulkCombinedPending ? '' : 'disabled'}></td>
+        <td class="account"><div class="account-email"><strong>${escapeHtml(job.email)}</strong><button type="button" class="icon-button copy-email" data-action="copy-email" title="Copy email" aria-label="Copy email của ${escapeHtml(job.email)}">${icon('copy')}</button></div><span>${job.id.slice(0, 10).toUpperCase()} · <b class="job-mode ${job.mode === 'check_only' ? 'check' : 'change'}">${job.mode === 'check_only' ? 'CHỈ CHECK' : 'ĐỔI 2FA'}</b></span></td>
         <td><span class="status ${job.status} ${job.plan ? `plan-${escapeHtml(job.plan)}` : ''}">${escapeHtml(statusLabel(job))}</span></td>
         <td><div class="account-result"><span class="account-badge ${check.className}">${escapeHtml(check.label)}</span><small>${escapeHtml(checkpoint)}</small></div></td>
         <td class="usage-cell">${usageCell(job)}</td>
@@ -483,6 +519,7 @@
           ${canDeleteChats ? `<button type="button" class="icon-button delete-chats ${chatDeleting ? 'is-pending' : ''}" data-action="delete-chats" title="Xóa hết dữ liệu chat" aria-label="Xóa hết dữ liệu chat của ${escapeHtml(job.email)}" ${accountBusy ? 'disabled' : ''}>${icon(chatDeleting ? 'loader-2' : 'trash-x')}</button>` : ''}
           ${canDeleteChats ? `<button type="button" class="icon-button logout-sessions ${loggingOut ? 'is-pending' : ''}" data-action="logout-sessions" title="Logout all sessions" aria-label="Logout all sessions của ${escapeHtml(job.email)}" ${accountBusy || job.usage_refreshing || recheckPending ? 'disabled' : ''}>${icon(loggingOut ? 'loader-2' : 'logout')}</button>` : ''}
           ${canDeleteChats && job.login_verified ? `<button type="button" class="icon-button passkey ${passkeyPreparing ? 'is-pending' : ''}" data-action="passkey" title="Thêm passkey" aria-label="Thêm passkey cho ${escapeHtml(job.email)}" ${accountBusy || job.usage_refreshing || recheckPending ? 'disabled' : ''}>${icon(passkeyPreparing ? 'loader-2' : 'fingerprint')}</button>` : ''}
+          ${canCombine ? `<button type="button" class="icon-button combined-flow ${combinedPending ? 'is-pending' : ''}" data-action="${activeCombined ? 'stop-combined' : 'combined'}" title="${combinedTitle}" aria-label="${combinedAria}" ${combinedDisabled ? 'disabled' : ''}>${icon(combinedIcon)}</button>` : ''}
           ${canRecheck ? `<button type="button" class="icon-button recheck-account ${recheckPending ? 'is-pending' : ''}" data-action="recheck" title="Check lại tài khoản" aria-label="Check lại tài khoản ${escapeHtml(job.email)}" ${recheckPending || job.usage_refreshing || accountBusy ? 'disabled' : ''}>${icon(recheckPending ? 'loader-2' : 'shield-check')}</button>` : ''}
           <button type="button" class="icon-button" data-action="logs" title="Xem log" aria-label="Xem log của ${escapeHtml(job.email)}">${icon('list-details')}</button>
           ${canRetry ? `<button type="button" class="icon-button" data-action="retry" title="Thử lại" aria-label="Thử lại ${escapeHtml(job.email)}">${icon('refresh')}</button>` : ''}
@@ -499,6 +536,24 @@
 
   function isRowChangeEligible(job) {
     return job.mode === 'check_only' && job.status === 'success' && job.account_state === 'live';
+  }
+
+  function isCombinedEligible(job) {
+    return isRowChangeEligible(job) && job.login_verified && !job.rotated_pending_verify;
+  }
+
+  function normalizedEmail(value) {
+    return value?.email?.trim().toLowerCase() || '';
+  }
+
+  function activeCombinedOperation(job) {
+    const email = normalizedEmail(job);
+    return [...state.combinedOperations.values()].find((operation) => !combinedTerminal(operation)
+      && (operation.job_id === job?.id || (email && normalizedEmail(operation) === email)));
+  }
+
+  function isCombinedBusy(job) {
+    return Boolean(activeCombinedOperation(job));
   }
 
   function renderOutput() {
@@ -608,6 +663,10 @@
 
   async function jobAction(id, action) {
     try {
+      if (action === 'copy-email') {
+        await copyEmail(id);
+        return;
+      }
       if (isJournalView()) {
         if (action !== 'copy-raw' || !state.journal || state.journalLoading) return;
         const raw = await api(`/api/live-journals/${encodeURIComponent(state.journal.journal.id)}/accounts/${encodeURIComponent(id)}/raw`, { cache: 'no-store' });
@@ -628,6 +687,8 @@
       if (action === 'delete-chats') return openDeleteChatsConfirmation(id);
       if (action === 'logout-sessions') return openLogoutConfirmation(id);
       if (action === 'passkey') return openPasskeyConfirmation(id);
+      if (action === 'combined') return startCombined(id);
+      if (action === 'stop-combined') return stopCombined(id);
       if (action === 'copy-raw') {
         await copyRaw(id);
         return;
@@ -812,6 +873,92 @@
     }
   }
 
+  function combinedTerminal(operation) {
+    return ['success', 'error', 'cancelled'].includes(operation?.status);
+  }
+
+  function handleCombinedSnapshot(operation) {
+    const previous = state.combinedOperations.get(operation.id);
+    state.combinedOperations.set(operation.id, operation);
+    if (combinedTerminal(operation)) {
+      const timer = state.combinedPollTimers.get(operation.id);
+      if (timer) clearTimeout(timer);
+      state.combinedPollTimers.delete(operation.id);
+      state.combinedStoppingOperationIds.delete(operation.id);
+    }
+    if (!combinedTerminal(previous) && combinedTerminal(operation)) {
+      if (operation.status === 'success') {
+        toast(`Đã hoàn tất luồng gộp cho ${operation.email}.`);
+      } else if (operation.status === 'error') {
+        toast(`Luồng gộp thất bại: ${operation.error || 'lỗi không xác định'}`, 'error');
+      } else {
+        toast('Đã dừng luồng gộp. Thao tác đã gửi có thể không hoàn tác được.');
+      }
+    }
+    render();
+  }
+
+  function scheduleCombinedPoll(id, delay = 0) {
+    const previous = state.combinedPollTimers.get(id);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(async () => {
+      state.combinedPollTimers.delete(id);
+      if (!state.combinedOperations.has(id)) return;
+      try {
+        const operation = await api(`/api/combined/${encodeURIComponent(id)}`, { cache: 'no-store' });
+        handleCombinedSnapshot(operation);
+        if (!combinedTerminal(operation)) scheduleCombinedPoll(id, 350);
+      } catch (error) {
+        console.warn('Không đọc được trạng thái luồng gộp.', error);
+        if (!combinedTerminal(state.combinedOperations.get(id))) scheduleCombinedPoll(id, 1000);
+      }
+    }, delay);
+    state.combinedPollTimers.set(id, timer);
+  }
+
+  async function startCombined(id) {
+    const job = state.jobs.get(id);
+    if (!job) throw new Error('Không tìm thấy tài khoản trong hàng chờ.');
+    if (activeCombinedOperation(job)) return;
+    if (!isCombinedEligible(job) || job.usage_refreshing || job.chat_deleting
+      || isLoggingOut(job) || isPasskeyPreparing(job) || isCombinedBusy(job)) {
+      throw new Error('Tài khoản chưa đủ điều kiện chạy luồng gộp.');
+    }
+    if (state.combinedStartingJobIds.has(id)) return;
+
+    state.combinedStartingJobIds.add(id);
+    render();
+    try {
+      const operation = await api(`/api/jobs/${encodeURIComponent(id)}/combined/start`, {
+        method: 'POST',
+        body: JSON.stringify({ confirm: 'START_COMBINED' }),
+      });
+      handleCombinedSnapshot(operation);
+      if (!combinedTerminal(operation)) scheduleCombinedPoll(operation.id, 350);
+      toast(`Đã bắt đầu đổi 2FA rồi logout tất cả phiên cho ${job.email}.`);
+      return operation;
+    } finally {
+      state.combinedStartingJobIds.delete(id);
+      render();
+    }
+  }
+
+  async function stopCombined(id) {
+    const operation = activeCombinedOperation(state.jobs.get(id));
+    if (!operation || combinedTerminal(operation) || state.combinedStoppingOperationIds.has(operation.id)) return;
+    state.combinedStoppingOperationIds.add(operation.id);
+    render();
+    try {
+      const next = await api(`/api/combined/${encodeURIComponent(operation.id)}/stop`, { method: 'POST' });
+      handleCombinedSnapshot(next);
+      if (!combinedTerminal(next)) scheduleCombinedPoll(next.id, 350);
+    } catch (error) {
+      state.combinedStoppingOperationIds.delete(operation.id);
+      render();
+      toast(error.message, 'error');
+    }
+  }
+
   async function runWithConcurrency(items, limit, worker) {
     let nextIndex = 0;
     const runNext = async () => {
@@ -949,10 +1096,55 @@
     }
   }
 
+  async function startSelectedCombined() {
+    if (state.bulkCombinedPending || state.logoutPending) return;
+    const ids = [...state.selectedLogoutJobIds];
+    if (isJournalView() || !ids.length || ids.some((id) => !isBulkCombinedEligible(state.jobs.get(id)))) {
+      toast('Chỉ chọn tài khoản Chỉ check đã xác minh Live và không có thao tác đang chạy.', 'error');
+      return;
+    }
+    state.bulkCombinedPending = true;
+    state.pendingBulkCombinedJobIds = ids;
+    render();
+    let succeeded = 0;
+    const concurrency = Math.max(1, Math.min(Number(state.settings['twofa.max_concurrent']) || 1, ids.length));
+    try {
+      await runWithConcurrency(ids, concurrency, async (id) => {
+        try {
+          if (!isBulkCombinedEligible(state.jobs.get(id))) return;
+          const operation = await startCombined(id);
+          if (operation) {
+            succeeded += 1;
+            state.selectedLogoutJobIds.delete(id);
+          }
+        } catch (_) {
+          // A failed start is not retried; other selected accounts still run.
+        }
+      });
+    } finally {
+      state.bulkCombinedPending = false;
+      state.pendingBulkCombinedJobIds = [];
+      render();
+    }
+    if (succeeded === ids.length) {
+      toast(`Đã bắt đầu luồng Đổi 2FA + Logout cho ${succeeded} tài khoản.`);
+    } else {
+      toast(`Đã bắt đầu ${succeeded}/${ids.length} luồng Đổi 2FA + Logout; ${ids.length - succeeded} tài khoản chưa khởi chạy. Tool không tự động thử lại.`, 'error');
+    }
+  }
+
   async function copyRaw(id) {
     const raw = await api(`/api/jobs/${encodeURIComponent(id)}/raw`, { cache: 'no-store' });
     await writeClipboard(raw);
     toast('Đã copy raw data của tài khoản.');
+  }
+
+  async function copyEmail(id) {
+    const job = state.jobs.get(id) || displayedJobs().find((item) => String(item.id) === String(id));
+    const email = job?.email?.trim();
+    if (!email) throw new Error('Không có email để copy.');
+    await writeClipboard(email);
+    toast('Đã copy email tài khoản.');
   }
 
   function clearRowChangeResult() {
@@ -1395,6 +1587,14 @@
       const data = await fetch('/api/bootstrap').then((response) => response.json());
       state.token = data.token; state.settings = data.settings; state.workerHealth = data.worker_health; state.connection = 'online';
       data.jobs.forEach((job) => state.jobs.set(job.id, job));
+      try {
+        const combinedData = await api('/api/combined', { cache: 'no-store' });
+        combinedData.operations.forEach((operation) => state.combinedOperations.set(operation.id, operation));
+        combinedData.operations.filter((operation) => !combinedTerminal(operation)).forEach((operation) => scheduleCombinedPoll(operation.id, 350));
+      } catch (_) {
+        // The dashboard can still load the account list when an older server
+        // does not expose combined workflow snapshots yet.
+      }
       const hasActiveJobs = data.jobs.some((job) => ['queued', 'running'].includes(job.status));
       $('combo-input').value = hasActiveJobs ? String(state.settings['twofa.input_draft'] || '') : '';
       loadSettingsForm(); updateEditor(); scrollEditorToTop(true); renderConnection(); render(); renderOutput(); syncEventVisibility(); await refreshOutput();
@@ -1403,6 +1603,7 @@
   }
 
   $('combo-input').addEventListener('input', scheduleDraftSave);
+  window.AccountInput.installPasteNormalizer($('combo-input'));
   $('open-live-journal').addEventListener('click', openLiveJournal);
   $('close-live-journal').addEventListener('click', () => $('live-journal-modal').close());
   $('live-journal-modal').addEventListener('close', () => $('open-live-journal').focus());
@@ -1451,6 +1652,9 @@
   $('clear-failed-cancel').addEventListener('click', () => $('clear-failed-confirm').close());
   $('row-change-confirm-action').addEventListener('click', confirmRowChange);
   $('row-change-cancel').addEventListener('click', () => { state.pendingChangeJobId = null; $('row-change-confirm').close(); });
+  $('change-selected').addEventListener('click', async () => {
+    try { await startSelectedCombined(); } catch (error) { toast(error.message, 'error'); }
+  });
   $('delete-chats-confirm-action').addEventListener('click', confirmDeleteChats);
   $('logout-sessions-confirm-action').addEventListener('click', confirmLogoutSessions);
   $('passkey-confirm-action').addEventListener('click', confirmPasskey);
@@ -1566,5 +1770,9 @@
   $('clear-all').addEventListener('click', clearAllJobs);
   document.addEventListener('visibilitychange', syncEventVisibility);
   window.addEventListener('pagehide', disconnectEvents);
+  window.SessionImportUI?.init({ api, toast, ready: () => Boolean(state.token), onJob: job => {
+    state.jobs.set(job.id, job);
+    render();
+  } });
   updateEditor(); renderOutput(); init();
 })();

@@ -18,11 +18,11 @@ assert.match(html, /id="password-combo-input"/);
 assert.match(html, /id="password-success-output" readonly/);
 assert.match(html, /id="password-history-search" type="search"/);
 assert.match(html, /id="password-history-total"/);
-assert.match(html, /dashboard\.css\?v=1\.5\.24/);
+assert.match(html, /dashboard\.css\?v=1\.5\.26/);
 assert.match(html, /class="password-history-title-cluster"/);
 assert.match(html, /class="password-history-title-icon"/);
 assert.match(html, /password-history-ui\.js\?v=1\.0\.0/);
-assert.match(html, /password-ui\.js\?v=1\.2\.2/);
+assert.match(html, /password-ui\.js\?v=1\.2\.3/);
 
 assert.match(script, /\/api\/password-settings/);
 assert.match(script, /\/api\/password\/jobs/);

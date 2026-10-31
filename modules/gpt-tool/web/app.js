@@ -5,7 +5,7 @@ const FORMATS = [
 ];
 
 const FORMAT_CONFIRMATION = {
-  sub2api: "Xuất JSON sub2api",
+  sub2api: "Tự nhập vào Sub2API",
   cockpit: "Tự nhập vào Cockpit",
   "9router": "Tự thêm vào 9Router",
 };
@@ -40,6 +40,7 @@ function savePrefs() {
       proxy: document.getElementById("proxy").value,
       workers: clampWorkers(document.getElementById("workers").value),
       autoImport: document.getElementById("auto-import").checked,
+      sub2apiUrl: document.getElementById("sub2api-url").value.trim(),
     })
   );
 }
@@ -61,10 +62,14 @@ const prefs = loadPrefs();
 const defaultFormat = FORMATS.some(([id]) => id === prefs.format) ? prefs.format : "cockpit";
 document.querySelector(`input[name="fmt"][value="${defaultFormat}"]`).checked = true;
 if (prefs.proxy) document.getElementById("proxy").value = prefs.proxy;
+if (prefs.sub2apiUrl) document.getElementById("sub2api-url").value = prefs.sub2apiUrl;
 document.getElementById("workers").value = clampWorkers(prefs.workers ?? document.getElementById("workers").value);
 document.getElementById("auto-import").checked = prefs.autoImport !== false;
 updateFormatConfirmation();
-document.getElementById("auto-import").addEventListener("change", savePrefs);
+document.getElementById("auto-import").addEventListener("change", () => {
+  updateFormatConfirmation();
+  savePrefs();
+});
 document.getElementById("formats").addEventListener("change", () => {
   updateFormatConfirmation();
   savePrefs();
@@ -74,6 +79,85 @@ document.getElementById("workers").addEventListener("change", () => {
   document.getElementById("workers").value = clampWorkers(document.getElementById("workers").value);
   savePrefs();
 });
+document.getElementById("sub2api-url").addEventListener("change", savePrefs);
+
+const sub2apiUrlInput = document.getElementById("sub2api-url");
+const sub2apiKeyInput = document.getElementById("sub2api-api-key");
+const configStatus = document.getElementById("sub2api-config-status");
+const saveConfigButton = document.getElementById("save-sub2api");
+const clearConfigButton = document.getElementById("clear-sub2api");
+let savedSub2api = null;
+let configBusy = false;
+let configTouched = false;
+
+function canUseSavedSub2api() {
+  return savedSub2api?.has_api_key &&
+    savedSub2api.url === sub2apiUrlInput.value.trim().replace(/\/+$/, "");
+}
+
+function showSavedSub2api() {
+  sub2apiKeyInput.placeholder = canUseSavedSub2api()
+    ? "Đã lưu trong Keychain — để trống để dùng lại"
+    : "Nhập khóa quản trị Sub2API";
+  clearConfigButton.disabled = configBusy || !savedSub2api?.has_api_key;
+}
+
+sub2apiUrlInput.addEventListener("input", () => {
+  configTouched = true;
+  showSavedSub2api();
+  configStatus.textContent = canUseSavedSub2api() ? "Đang dùng cấu hình đã lưu." : "Chưa lưu cấu hình cho URL này.";
+});
+
+const configReady = (async () => {
+  try {
+    const response = await fetch("/api/sub2api/config");
+    if (!response.ok) throw new Error("Không đọc được cấu hình đã lưu; vẫn có thể nhập thủ công.");
+    savedSub2api = await response.json();
+    if (!configTouched && savedSub2api.url) {
+      sub2apiUrlInput.value = savedSub2api.url;
+      savePrefs();
+    }
+    saveConfigButton.disabled = !savedSub2api.supported;
+    configStatus.textContent = savedSub2api.has_api_key
+      ? "Đã lưu trong macOS Keychain. Không cần nhập lại key."
+      : savedSub2api.supported ? "Bấm Lưu cấu hình để dùng lại lần sau." : "Lưu API Key hiện chỉ hỗ trợ macOS Keychain.";
+    showSavedSub2api();
+  } catch (error) {
+    configStatus.textContent = error.message;
+  }
+})();
+
+async function changeSub2apiConfig(action) {
+  if (configBusy) return;
+  configBusy = true;
+  configTouched = true;
+  saveConfigButton.disabled = clearConfigButton.disabled = true;
+  configStatus.textContent = "Đang xử lý Keychain…";
+  try {
+    await configReady;
+    const response = await fetch("/api/sub2api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, url: sub2apiUrlInput.value.trim(), api_key: sub2apiKeyInput.value.trim() }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Không lưu được cấu hình.");
+    savedSub2api = data;
+    sub2apiKeyInput.value = "";
+    sub2apiUrlInput.value = data.url;
+    savePrefs();
+    configStatus.textContent = action === "save" ? "Đã lưu trong macOS Keychain. Lần sau không cần nhập lại." : "Đã xóa cấu hình và key đã lưu.";
+  } catch (error) {
+    configStatus.textContent = error.message;
+  } finally {
+    configBusy = false;
+    saveConfigButton.disabled = savedSub2api?.supported === false;
+    showSavedSub2api();
+  }
+}
+
+saveConfigButton.addEventListener("click", () => changeSub2apiConfig("save"));
+clearConfigButton.addEventListener("click", () => changeSub2apiConfig("clear"));
 
 function selectedFormat() {
   const el = document.querySelector('input[name="fmt"]:checked');
@@ -82,9 +166,12 @@ function selectedFormat() {
 
 function updateFormatConfirmation() {
   document.getElementById("format-confirmation-text").textContent = FORMAT_CONFIRMATION[selectedFormat()] || "";
-  const supportsImport = selectedFormat() === "cockpit" || selectedFormat() === "9router";
+  const supportsImport = ["cockpit", "9router", "sub2api"].includes(selectedFormat());
   document.getElementById("format-confirmation").hidden = !supportsImport;
   document.getElementById("auto-import-help").hidden = !supportsImport;
+  document.getElementById("sub2api-config").hidden = !(
+    selectedFormat() === "sub2api" && document.getElementById("auto-import").checked
+  );
 }
 
 const rows = new Map();
@@ -128,6 +215,9 @@ function applyJob(running, results) {
       cockpitSent: !!item.cockpit_sent,
       nineRouterSent: !!item.nine_router_sent,
       nineRouterError: item.nine_router_error,
+      sub2apiSent: !!item.sub2api_sent,
+      sub2apiAction: item.sub2api_action,
+      sub2apiError: item.sub2api_error,
       index: item.index != null ? item.index : i,
     });
   });
@@ -177,7 +267,7 @@ function renderLog(total, busy) {
     .map((row) => {
       const pill = STEP_LABEL[row.step] || row.step || "";
       const detail = row.state === "ok"
-        ? ["JSON sẵn sàng", row.cockpitSent && "Đã gửi Cockpit", row.nineRouterSent && "Đã thêm 9Router", row.nineRouterError].filter(Boolean).join(" · ")
+        ? ["JSON sẵn sàng", row.cockpitSent && "Đã gửi Cockpit", row.nineRouterSent && "Đã thêm 9Router", row.nineRouterError, row.sub2apiSent && `Đã nhập Sub2API (${row.sub2apiAction})`, row.sub2apiError].filter(Boolean).join(" · ")
         : row.error || "";
       const copyButton = row.state === "ok" && row.copyable
         ? `<button type="button" class="copy-json" data-index="${row.index}" aria-label="Copy JSON ${escapeHtml(row.email)}">Copy JSON</button>`
@@ -278,8 +368,21 @@ document.getElementById("run-export").addEventListener("click", async () => {
     setStatus("Chọn định dạng ở bước 1 trước khi chạy.", "err");
     return;
   }
-  savePrefs();
   const importEnabled = document.getElementById("auto-import").checked;
+  if (format === "sub2api" && importEnabled) {
+    await configReady;
+    if (configBusy) {
+      setStatus("Đợi lưu/xóa cấu hình xong rồi chạy lại.", "err");
+      return;
+    }
+  }
+  savePrefs();
+  const sub2apiUrl = document.getElementById("sub2api-url").value.trim();
+  const sub2apiApiKey = document.getElementById("sub2api-api-key").value.trim();
+  if (format === "sub2api" && importEnabled && (!sub2apiUrl || (!sub2apiApiKey && !canUseSavedSub2api()))) {
+    setStatus("Nhập URL và Admin API Key của Sub2API trước khi chạy.", "err");
+    return;
+  }
   currentJobId = null;
   setRunButton(true);
   seedRows(document.getElementById("lines").value);
@@ -295,6 +398,10 @@ document.getElementById("run-export").addEventListener("click", async () => {
       workers: clampWorkers(document.getElementById("workers").value),
       cockpit_import: format === "cockpit" && importEnabled,
       nine_router_import: format === "9router" && importEnabled,
+      sub2api_import: format === "sub2api" && importEnabled,
+      sub2api_url: format === "sub2api" && importEnabled ? sub2apiUrl : "",
+      sub2api_api_key: format === "sub2api" && importEnabled ? sub2apiApiKey : "",
+      sub2api_use_saved: format === "sub2api" && importEnabled && !sub2apiApiKey && !!canUseSavedSub2api(),
     }),
   });
   const data = await res.json();
@@ -319,10 +426,11 @@ document.getElementById("run-export").addEventListener("click", async () => {
       return;
     }
     setRunButton(false);
-    const integrationErrors = [job.cockpit?.error, job.nine_router?.error].filter(Boolean);
+    const integrationErrors = [job.cockpit?.error, job.nine_router?.error, job.sub2api?.error].filter(Boolean);
     const integrationSuccess = [
       job.cockpit?.sent && `Cockpit: ${job.cockpit.count}`,
       job.nine_router?.sent && `9Router: ${job.nine_router.count}`,
+      job.sub2api?.sent && `Sub2API: ${job.sub2api.count}`,
     ].filter(Boolean);
     if (job.cancelled) setStatus("Đã dừng các tiến trình.", "ok");
     else if (job.error) setStatus(job.error, "err");

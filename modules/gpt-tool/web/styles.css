@@ -71,7 +71,7 @@ h1 em { color: var(--muted-strong); font-family: var(--serif); font-weight: 400;
 label { color: var(--muted-strong); font-size: 15px; }
 .field-heading label, .field label { margin: 0; font-weight: 600; }
 .field-heading > span { color: var(--muted); font-family: var(--mono); font-size: 13px; }
-textarea, input[type="text"], input[type="number"] { width: 100%; border: 1px solid var(--line); border-radius: 10px; outline: none; background: var(--field); color: var(--ink); font-family: var(--mono); font-size: 15px; transition: 180ms ease; }
+textarea, input[type="text"], input[type="number"], input[type="url"], input[type="password"] { width: 100%; border: 1px solid var(--line); border-radius: 10px; outline: none; background: var(--field); color: var(--ink); font-family: var(--mono); font-size: 15px; transition: 180ms ease; }
 textarea { min-height: 280px; padding: 18px; resize: vertical; line-height: 1.65; }
 textarea:focus, input:focus { border-color: rgba(103, 214, 196, 0.72); box-shadow: 0 0 0 3px rgba(103, 214, 196, 0.08); }
 textarea::placeholder, input::placeholder { color: var(--muted); }
@@ -83,7 +83,11 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .format-confirmation input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .field { display: grid; gap: 8px; }
 .field label span { color: var(--muted); font-weight: 400; }
-input[type="text"], input[type="number"] { min-height: 50px; padding: 13px 14px; }
+input[type="text"], input[type="number"], input[type="url"], input[type="password"] { min-height: 50px; padding: 13px 14px; }
+.sub2api-config { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: rgba(11, 20, 22, 0.62); }
+.config-actions { grid-column: 1 / -1; flex-wrap: wrap; }
+.config-actions span { color: var(--muted-strong); font-size: 13px; }
+.config-actions button:disabled { opacity: 0.5; cursor: default; }
 .action-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
 .action-row button { min-height: 48px; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 700; transition: 180ms ease; }
 button.primary { padding: 0 17px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
@@ -160,6 +164,7 @@ button.primary:disabled { opacity: 0.55; cursor: wait; transform: none; }
   .helper-row { display: block; }
   .secure-label { display: block; margin-top: 7px; }
   .action-row button { width: 100%; }
+  .sub2api-config { grid-template-columns: 1fr; }
   .monitor-header { align-items: flex-start; }
   .monitor-actions { align-items: flex-end; flex-direction: column; }
   .row-actions { align-items: flex-end; flex-direction: column-reverse; }

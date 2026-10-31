@@ -14,7 +14,7 @@ for (const id of [
 ]) assert.match(html, new RegExp(`id="${id}"`));
 assert.match(dashboardHtml, /id="open-passkey-tool"[^>]*href="\/passkey"/);
 assert.doesNotMatch(dashboardHtml, /id="passkey-workspace"/);
-assert.match(html, /passkey-ui\.js\?v=1\.1\.2/);
+assert.match(html, /passkey-ui\.js\?v=1\.1\.3/);
 assert.match(html, /dashboard\.css\?v=1\.5\.20/);
 assert.match(html, /<main id="passkey-workspace"[^>]*class="passkey-workspace passkey-page"/);
 assert.doesNotMatch(html, /<dialog id="passkey-workspace"/);

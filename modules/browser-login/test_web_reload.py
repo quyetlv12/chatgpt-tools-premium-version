@@ -217,7 +217,8 @@ class WebReloadTests(unittest.TestCase):
             mock.patch.object(server.threading, 'Thread') as thread,
         ):
             self.assertTrue(server.start_web_login(['demo@example.test|synthetic|'], reload_after=37))
-            self.assertEqual(thread.call_args.kwargs['kwargs'], {'reload_after': 37, 'codex_web': False, 'browser_id': 'auto'})
+            self.assertEqual(thread.call_args.kwargs['kwargs'], {'reload_after': 37, 'codex_web': False,
+                                                                'browser_id': 'auto', 'mobile_enabled': False})
 
     def test_personal_retry_orders_tabs_until_verified_and_stops_safely(self):
         scenarios = [

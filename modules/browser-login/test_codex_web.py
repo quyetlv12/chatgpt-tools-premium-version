@@ -78,7 +78,8 @@ class CodexWebTests(unittest.TestCase):
     def test_api_accepts_multiple_accounts_and_configured_workers(self):
         handler = server.Handler.__new__(server.Handler); handler.path = '/api/codex-web/start'
         body = json.dumps({'accounts':['demo@example.test|synthetic|', 'second@example.test|synthetic|'], 'workers':2,
-                           'openLinkEnabled':True, 'linkUrl':'https://evil.test/', 'reloadEnabled':True}).encode()
+                           'openLinkEnabled':True, 'linkUrl':'https://evil.test/', 'reloadEnabled':True,
+                           'mobileEnabled': True}).encode()
         handler.headers = {'Content-Length':str(len(body))}; handler.rfile = io.BytesIO(body); handler._json = mock.Mock()
         with mock.patch.object(server, 'start_web_login', return_value=True) as start:
             handler.do_POST()

@@ -1,0 +1,23 @@
+purpose:
+  stands_in_for: Sub2API admin Codex-session import endpoint on localhost.
+  unblocks: Repeatable caller checks with synthetic sessions and no provider credentials.
+assumptions:
+  - id: caller-handles-modeled-import-results
+    status: supported
+    claim: The caller serializes the modeled import request and reads mixed one-based results from the localhost stand-in.
+    reason: The real Python HTTP client reached the Node handler and returned one created item and one failed item with indices 1 and 2.
+    verification: On 2026-11-01, ran the Node handler directly and called _import_sub2api with two synthetic sessions; assertions passed. A wrong synthetic key also produced the safe authentication error.
+    source: gpt_tool/server.py; postman/mocks/sub2api/default.js; tests/test_sub2api_import.py
+    updated_at: "2026-11-01"
+  - id: live-provider-contract
+    status: unknown
+    claim: The deployed provider accepts the modeled request and returns the modeled result schema.
+    reason: This review exercised a repository-owned stand-in; it did not call a real provider or validate its current contract.
+    verification: Live provider compatibility remains unverified.
+    source: postman/mocks/sub2api/default.js; gpt_tool/server.py
+    updated_at: "2026-11-01"
+fingerprints:
+  - id: local-review
+    date: "2026-11-01"
+    commit: "d7c8352 with reviewed working-tree changes"
+    cli: "Postman CLI unavailable; Node handler executed directly"

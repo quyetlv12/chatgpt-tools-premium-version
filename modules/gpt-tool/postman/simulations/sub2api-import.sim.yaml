@@ -1,0 +1,5 @@
+simulation: sub2api-import
+routing: path
+mocks:
+  - routeKey: sub2api
+    path: ../mocks/sub2api/config.yaml

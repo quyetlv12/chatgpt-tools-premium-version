@@ -21,7 +21,9 @@ Cửa sổ sẽ tự tạo `.venv`, cài thư viện, mở trình duyệt `http:
 3. Tab **Convert JSON**: dán auth/session JSON có sẵn.
 4. File nằm trong thư mục `out/`.
 
-Với định dạng Cockpit hoặc 9router, có thể bỏ chọn **Tự nhập vào Cockpit / Tự thêm vào 9Router** để chỉ xuất JSON, không tự mở Cockpit hoặc gửi dữ liệu sang 9router. Tool nhớ lựa chọn bật/tắt trên trình duyệt. sub2api chỉ xuất JSON, không tự nhập.
+Với định dạng Cockpit, 9router hoặc sub2api, có thể bỏ chọn **Tự nhập** để chỉ xuất JSON. Khi chọn sub2api, nhập URL máy chủ và Admin API Key; tool gửi Codex session tới API import chính thức sau khi export và tự cập nhật tài khoản trùng. Trên macOS, bấm **Lưu cấu hình** để lưu URL và key trong Keychain và dùng lại sau khi mở app. Key đã lưu không trả về giao diện, không nằm trong localStorage; ô key để trống sẽ dùng key đã lưu cho đúng URL. Nhập key mới để ghi đè, hoặc bấm **Xóa cấu hình** để xóa khỏi Keychain. Đổi URL cần nhập key riêng. Nếu Keychain bị khóa hoặc trên hệ điều hành khác, vẫn có thể nhập thủ công, không có lưu key dạng văn bản.
+
+API cấu hình cục bộ: `GET /api/sub2api/config` chỉ trả `url`, `has_api_key`, `supported`; `POST` cùng đường dẫn nhận `{"action":"save","url":"https://sub2api.example.com","api_key":"..."}` hoặc `{"action":"clear"}`. Yêu cầu JSON cùng nguồn/đúng Host; phản hồi không cache và không chứa key. Export có thể gửi `sub2api_use_saved: true` thay cho key, chỉ khi URL khớp cấu hình đã lưu.
 
 ## CLI
 

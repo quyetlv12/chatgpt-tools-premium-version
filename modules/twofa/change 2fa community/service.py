@@ -394,11 +394,13 @@ class TwoFAService:
     async def prepare_passkey(
         self, *, email: str, password: str, secret: str, timeout: float,
         log: LogFn | None = None,
+        on_authenticated: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> str:
         from passkey_service import PasskeyPreparationError, prepare_passkey_url
 
         stage = "đăng nhập lại"
         cancelled = False
+        session = None
 
         def safe_login_log(message: str) -> None:
             # get_session_pure_request() has verbose protocol diagnostics. The
@@ -452,6 +454,9 @@ class TwoFAService:
                     break
             if cancelled:
                 raise asyncio.CancelledError
+            # Finish the handoff attempt before optional inspection uses its own budget.
+            if session is not None and on_authenticated is not None:
+                await on_authenticated(session)
 
     async def logout_all_sessions(
         self, *, email: str, password: str, secret: str, timeout: float, log: LogFn,
@@ -540,6 +545,27 @@ class TwoFAService:
             timeout=timeout,
             log=log,
         )
+        return await self.check_authenticated(
+            session=session, email=email, secret=secret, timeout=timeout, log=log,
+            read_usage=read_usage, read_payment_methods=read_payment_methods,
+        )
+
+    async def check_authenticated(
+        self, *, session: dict[str, Any], email: str, secret: str,
+        timeout: float, log: LogFn, read_usage: bool = True,
+        read_payment_methods: bool = True,
+    ) -> RotationResult:
+        """Inspect an internal login result without authenticating again or mutating MFA."""
+        if not isinstance(session.get("accessToken"), str) or not session["accessToken"].strip():
+            raise TwoFAFlowError("Phiên đăng nhập không hợp lệ")
+        user = session.get("user")
+        session_email = user.get("email") if isinstance(user, dict) else None
+        # Older internal login responses can omit user.email; reject any explicit mismatch.
+        if session_email is not None and (
+            not isinstance(session_email, str)
+            or session_email.strip().casefold() != email.strip().casefold()
+        ):
+            raise TwoFAFlowError("Phiên đăng nhập không khớp tài khoản")
         plan, plan_source, billing_date, usage, payment_methods = await self._inspect_account(
             session=session,
             timeout=timeout,
@@ -580,6 +606,43 @@ class TwoFAService:
             timeout=timeout,
             log=log,
         )
+        return await self._rotate_authenticated(
+            session=session, email=email, password=password, timeout=timeout,
+            checkpoint=checkpoint, log=log, read_usage=read_usage,
+            read_payment_methods=read_payment_methods,
+        )
+
+    async def rotate_session(
+        self, *, session: dict[str, Any], email: str, password: str,
+        timeout: float, checkpoint: CheckpointFn,
+        before_mutation: Callable[[], Awaitable[None]], log: LogFn,
+        read_usage: bool = True, read_payment_methods: bool = True,
+    ) -> RotationResult:
+        from session_import import check_session_identity
+
+        log("[session] Đang xác minh session đúng tài khoản...")
+        try:
+            await check_session_identity(session, email, timeout)
+            return await self._rotate_authenticated(
+                session=session, email=email, password=password, timeout=timeout,
+                checkpoint=checkpoint, log=lambda _message: None,
+                read_usage=read_usage, read_payment_methods=read_payment_methods,
+                before_mutation=before_mutation,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Upstream exceptions can embed the imported token or enrollment secret.
+            raise TwoFAFlowError(
+                "Chưa hoàn tất đổi 2FA bằng session. Kiểm tra trạng thái job trước khi thao tác lại."
+            ) from None
+
+    async def _rotate_authenticated(
+        self, *, session: dict[str, Any], email: str, password: str,
+        timeout: float, checkpoint: CheckpointFn, log: LogFn,
+        read_usage: bool, read_payment_methods: bool,
+        before_mutation: Callable[[], Awaitable[None]] | None = None,
+    ) -> RotationResult:
         access_token = str(session["accessToken"])
         plan, plan_source, billing_date, usage, payment_methods = await self._inspect_account(
             session=session,
@@ -592,6 +655,8 @@ class TwoFAService:
         log("[2/3] Đang thay thế khóa TOTP...")
         _, default_rotate = self._resolve_dependencies()
         rotate_fn = self._rotate_fn or default_rotate
+        if before_mutation is not None:
+            await before_mutation()
         try:
             payload = await asyncio.wait_for(
                 rotate_fn(

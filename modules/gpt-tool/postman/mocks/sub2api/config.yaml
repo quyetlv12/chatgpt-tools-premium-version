@@ -1,0 +1,10 @@
+version: 1
+name: sub2api-import
+slug: sub2api-import
+protocol: http
+port: 4599
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

@@ -1,6 +1,6 @@
 # Shoptaikhoan Tool — Complete Application Flow
 
-Last code trace: 2026-10-07
+Last code trace: 2026-10-23 (session-import path only; other upstream protocols were not rechecked)
 
 Scope: Community Source v1.0.0, the FastAPI localhost application, its vanilla JavaScript dashboard, SQLite state, pure-request account operations, launchers, and macOS packaging.
 
@@ -20,6 +20,15 @@ from the 2FA queue and UI:
 - check_only: log in, classify the account, always read plan, and optionally read weekly Usage and saved payment methods without changing 2FA.
 - change_2fa: log in with the current secret, replace the TOTP factor, save the new secret, and prove the new secret works with a fresh login.
 - password_change: snapshot the common target password from Settings, re-authenticate the current password and TOTP, submit one mutation, and prove the target password works with a fresh login.
+
+An explicitly confirmed session-import action can rotate 2FA for one ChatGPT
+Web account from a supplied session JSON. The current password is still
+required for the post-rotation fresh-login proof. The parser accepts only the
+minimal `accessToken` and matching `user.email`; cookies, refresh tokens,
+account IDs, and URLs are discarded; Codex/9Router OAuth exports are rejected. The imported
+access token stays in RAM only and is removed when the job finishes, is
+deleted, or the manager shuts down. This path is not a general session
+export/import feature and does not retrieve sessions from 9router.
 
 A separate, explicitly confirmed per-row action can delete all chats for an
 already verified Live account. It never runs from check, 2FA, password, retry,
@@ -95,6 +104,7 @@ Active Community modules:
 | Launch and API | change 2fa community/server.py | Runtime directory, auth token, FastAPI routes, static files, SSE, browser launch, shutdown |
 | Job lifecycle | change 2fa community/jobs.py | Parsing, queue, workers, state, retries, recovery, logs, output, subscriptions |
 | Account orchestration | change 2fa community/service.py | Check, rotate, verify, plan/Usage/payment-method lookup, confirmed chat deletion, safe error classification |
+| Session import | change 2fa community/session_import.py; static/session-ui.js, session-ui.css | ChatGPT Web session JSON validation, fixed-host identity check, one-shot session-backed rotation UI; imported bearer token RAM-only |
 | Password lifecycle | change 2fa community/password_jobs.py, password_service.py | Independent queue, mutation checkpoint, ambiguity recovery, verified output/history |
 | Passkey lifecycle | change 2fa community/passkey_jobs.py, passkey_service.py | Independent RAM-only concurrent handoff queue; no persistence or WebAuthn result |
 | Passkey windows | change 2fa community/passkey_windows.py | macOS Chrome window creation and tiling; isolated profile preference defaults compatible WebAuthn creation to iCloud Keychain; RAM-only native IDs, no remote page automation |
@@ -456,6 +466,7 @@ Routes protected by X-Auth-Token:
 | Method and path | Manager operation | Success result |
 |---|---|---|
 | POST /api/jobs | add(lines, mode) | Created safe snapshots |
+| POST /api/session-jobs | add_session(email, password, session) | One explicitly confirmed session-backed 2FA job; safe snapshot; imported token RAM-only; no-store/nosniff on all responses |
 | GET /api/jobs/export?view=... | export_filtered(view) | Credential-bearing text download |
 | GET /api/jobs/{id}/raw | raw_combo(id) | One credential-bearing combo |
 | GET /api/twofa-history | twofa_history() | Credential-bearing verified history |
@@ -471,12 +482,18 @@ Routes protected by X-Auth-Token:
 | POST /api/jobs/{id}/delete-chats | delete_all_chats(id) | Reauthenticated bulk chat deletion; requires body confirmation `DELETE_ALL_CHATS` |
 | POST /api/jobs/{id}/logout-sessions | logout_all_sessions(id) | Reauthenticated one-shot session revocation; requires body confirmation `LOGOUT_ALL_SESSIONS` |
 | POST /api/jobs/{id}/passkey/start | prepare_passkey(id) | Reauthenticated official passkey handoff; requires body confirmation `ADD_PASSKEY` |
+| POST /api/jobs/{id}/combined/start | CombinedWorkflowManager.start(id) | Start the fixed RAM-only `twofa` then `logout` workflow; requires exactly `START_COMBINED`, rejects client-selected steps, and blocks active same-account password or bulk-passkey work |
+| GET /api/combined | CombinedWorkflowManager.snapshots() | List RAM-only combined workflow snapshots for reload/recovery |
+| GET /api/combined/{operation_id} | CombinedWorkflowManager.snapshot(id) | Read one combined workflow snapshot |
+| POST /api/combined/{operation_id}/stop | CombinedWorkflowManager.stop(id) | Stop the workflow and request cancellation of an already queued/running 2FA source job |
+| POST /api/combined/stop-all | CombinedWorkflowManager.stop_all() | Stop every active combined workflow |
 | GET /api/passkey/bootstrap | PasskeyJobManager | Safe RAM-only bulk snapshots and worker health |
 | POST /api/passkey/jobs | PasskeyJobManager.add | Queue `email|password|2FA` records for concurrent handoff preparation |
 | POST /api/passkey/jobs/{id}/launch | PasskeyJobManager.issue_handoff | Issue one-use redirect; requires body confirmation `LAUNCH_PASSKEY`; optional `native_window=true` opens/tile Chrome on macOS and returns `opened` plus fallback `launch_path` |
 | POST /api/passkey/windows/close | PasskeyWindows.close_all | Gracefully close only Chrome processes opened by this tool; force-kill a stubborn owned process after a bounded timeout |
 | POST /api/passkey/jobs/{id}/retry | retry(id) | Retry a definitive bulk preparation error |
 | POST /api/passkey/jobs/{id}/stop | stop(id) | Stop one RAM-only bulk job |
+| POST /api/passkey/jobs/stop-all | stop_all() | Stop every queued or running RAM-only bulk job |
 | DELETE /api/passkey/jobs/{id} | delete(id) | Delete one terminal RAM-only job |
 | DELETE /api/passkey/jobs | clear_async() | Clear only terminal bulk passkey jobs |
 | GET /api/passkey/jobs/{id}/logs | logs(id) | RAM-only fixed milestone log lines |
@@ -519,6 +536,10 @@ Editor behavior:
 
 - input and line numbers share scroll position;
 - line count and current-line UI update as text changes;
+- pasting into the main account editor, password workspace, or bulk Passkey
+  workspace removes `第N张`/`**第N张**` labels and converts an unambiguous
+  `email----password----2FA` line to `email|password|2FA`; already-valid or
+  ambiguous lines remain unchanged, and the session JSON input is excluded;
 - multi-line paste returns the editor to the first line;
 - the manual jump action moves scroll and caret to the top;
 - non-empty trimmed lines become a launch batch.
@@ -615,10 +636,15 @@ The manager owns an asyncio queue and configured workers. Each worker:
 _run first persists running state, then selects exactly one service branch:
 
 ~~~text
-mode == check_only                              -> service.check()
-mode == change_2fa and rotated_pending_verify  -> service.verify()
-otherwise                                       -> service.rotate()
+mode == check_only          -> service.check()
+rotated_pending_verify      -> service.verify()
+session_imported            -> service.rotate_session()
+otherwise                   -> service.rotate()
 ~~~
+
+The imported-session branch fails closed when its RAM token is absent or
+`session_mutation_started` is already set. Checkpointed verification is
+selected first, so a recovered job never repeats a session-backed mutation.
 
 Unexpected worker termination is observed by _worker_done(). The manager increments health counters, records the exception type, broadcasts health, and reconciles back to the configured pool size. add(), retry(), recheck(), and row Change 2FA also reconcile workers before enqueueing.
 
@@ -663,6 +689,8 @@ Primary statuses are queued, running, success, error, and cancelled. Never infer
 |---|---|
 | mode | check_only or change_2fa |
 | rotated_pending_verify | New secret is durable; only fresh-login verification remains |
+| session_imported | Job originated from the confirmed ChatGPT Web session-import action |
+| session_mutation_started | Durable marker required before a session-backed rotation; never authorizes mutation replay |
 | login_verified | Current stored secret completed login |
 | account_state | live, die, or unknown |
 | error_kind | technical_error, account_die, invalid_credentials, or none |
@@ -671,7 +699,10 @@ Primary statuses are queued, running, success, error, and cancelled. Never infer
 | usage_enabled | Whether this job may call the weekly Usage endpoint |
 | payment_methods_enabled | Whether this job may call the payment-method endpoint |
 
-retryable is false for account_die and invalid_credentials. Technical failures remain retryable.
+retryable is false for account_die and invalid_credentials. Ordinary technical
+failures remain retryable. Imported-session jobs are retryable only when a
+new-secret checkpoint remains pending verification; successful or
+uncheckpointed imported jobs cannot retry the mutation.
 
 ## 13. Pure-request login: why no remote browser is needed
 
@@ -811,6 +842,46 @@ Then a fresh pure-request login uses the new secret. Only after this succeeds do
 
 If a retry or restart sees rotated_pending_verify true, _run calls service.verify() with the checkpointed secret. It must not call rotate() a second time.
 
+### 15.1 Confirmed ChatGPT Web session JSON import
+
+The isolated dialog accepts email, current password, and a JSON file or pasted
+JSON, then requires the operator's destructive-action confirmation. It clears
+sensitive fields on close and after submission, ignores late file reads, and
+sends one request without automatic resubmission. A lost response requires
+checking the queue and account state before another manual submission.
+
+`POST /api/session-jobs` requires `X-Auth-Token` and a JSON body with `email`,
+`password`, `session_json` (a string), and `confirm=CHANGE_2FA_FROM_SESSION`.
+It reads at most 256 KiB; the embedded session is limited to 128 KiB. Missing
+confirmation or invalid input returns 422, an oversized body returns 413,
+same-account conflicts return 409, and storage failure returns a safe 503.
+Successful responses contain only `{"job": safe_snapshot}`. Responses use
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
+
+The parser requires a nonempty bounded `accessToken`, a normalized matching
+`user.email`, and valid expiry hints when present. JWT claims are not treated
+as cryptographic identity proof. It rejects Codex/provider OAuth exports and
+does not import cookies, refresh tokens, account IDs, or arbitrary URLs.
+
+Before mutation, `check_session_identity()` performs one read-only GET to the
+fixed `https://chatgpt.com/backend-api/me` endpoint with a timeout capped at
+30 seconds, without redirects, retries, or refresh. Its returned email must
+match. Then `rotate_session()` reuses the existing inspection/rotation helper,
+first persisting `session_mutation_started=true`. Failure to persist that
+marker prevents rotation. The bearer token is held only in `_sessions`, not
+SQLite, drafts, snapshots, SSE, history, or logs. Imported-job service logs are
+suppressed and errors are fixed, credential-free messages.
+
+After activation, the normal new-secret checkpoint and fresh-login proof
+apply. Retry/restart with a durable `rotated_pending_verify` checkpoint calls
+`verify()` only, even without the imported token. Without that checkpoint,
+loss of RAM state or any interrupted mutation fails closed and requires
+manual account-state inspection, not automatic rotation replay. Final success
+persistence failure restores pending-verification state for a safe retry.
+Successful Recheck clears session-origin flags and uses ordinary check-only
+login. Current passwords and newly generated TOTP secrets still use existing
+plaintext SQLite storage; only the imported token is RAM-only.
+
 ## 16. Plan, weekly Usage, and saved payment-method flow
 
 After login, _inspect_account() always reads plan and conditionally adds Usage
@@ -937,6 +1008,38 @@ Passkey UI and manager:
 8. The dashboard waits at most the preparation budget plus 30 seconds, retains errors in the dialog, and releases its controls on failure. A client timeout does not cancel server work; server-side same-account guards remain authoritative.
 9. Pure-request login runs in a thread, which asyncio cancellation cannot stop. On deadline/cancellation, preparation waits for that single login to settle before releasing the account lock and never requests an enrollment token afterward. Cleanup can exceed the preparation budget; the UI deadline still releases the dialog controls without declaring the account idle.
 
+Combined workflow:
+
+1. The dashboard shows it only for a checked, Live, login-verified account in
+   `check_only` mode. Clicking the row icon starts immediately; there is no modal,
+   confirmation screen, or client-selectable step list. The selected-account
+   toolbar action is **Đổi 2FA + Logout** and starts the same workflow for each
+   selected eligible account directly, replacing the old bulk 2FA-only modal.
+   Starts use the current concurrency setting, block duplicate batch clicks,
+   and validate the complete selection before sending. A failed start does not
+   retry automatically or prevent the remaining accounts from starting.
+   Standalone per-row 2FA and logout actions remain available.
+   `tests/test_bulk_combined_ui.js` covers eligibility, duplicate clicks,
+   bounded starts and partial failure; `tests/test_bulk_combined_browser.py`
+   verifies direct starts, no modal, the route icon and toolbar bounds at
+   desktop, tablet and mobile widths using intercepted synthetic fixtures.
+2. The plan is fixed to 2FA → Logout. Passkey is not part of this workflow; the
+   standalone per-account and bulk Passkey features remain available separately.
+3. The tool enqueues the 2FA rotation first and waits for the source job to reach
+   `success` with `login_verified=true` and `rotated_pending_verify=false`. Any
+   failed, cancelled, timed-out, or pending verification ends the workflow and
+   never calls Logout.
+4. Only after fresh-login verification with the new 2FA succeeds does the tool
+   call Logout once. There is no automatic retry of the revocation request.
+5. Start is rejected while the same account has active password-change or bulk
+   Passkey work. Combined state and locks are RAM-only. The protected
+   `/api/combined` endpoint lets the dashboard recover active snapshots after a
+   reload; a restart intentionally loses the in-memory workflow.
+6. While active, the same row icon becomes Dừng. Stopping requests cancellation
+   of the source 2FA job and
+   keeps the email locked until that job is terminal. Cancellation cannot undo a
+   remote mutation that was already accepted upstream.
+
 Bulk passkey page:
 
 Bulk preparation uses `TwoFAService.prepare_passkey()` and the same
@@ -950,7 +1053,7 @@ without requesting or issuing a passkey handoff; organization fallback is forbid
 
 1. `/passkey` renders a dedicated full-width page rather than a modal. It accepts `email|password|2FA` lines and uses the configured 2FA concurrency and timeout values for its RAM-only workers. The input/output panes and queue receive independent, taller scroll areas so the operator can inspect more data at once.
 2. After each account's official handoff is ready, requests a native Chrome window (`native_window=true`). Every submitted record snapshots its 1-based window position and the deduplicated batch size. `PasskeyWindows` starts the Google Chrome executable directly with a unique temporary profile plus `--new-window`, `--window-position`, and `--window-size`; before launch it writes only Chromium's registered `webauthn.create_in_icloud_keychain=true` preference to that profile. On supported macOS/Chrome versions, a compatible creation request therefore goes directly to the native Passwords/iCloud Keychain prompt. This matches ChatGPT Web's independent-browser behavior and does not require macOS Automation/Apple Events permission. All accounts in one submitted batch therefore receive separate, pre-tiled Chrome processes. No existing Chrome or default-browser tab is reused, moved, or closed. The temporary profile is removed after the operator closes that Chrome process. If Chrome is missing, profile preparation fails, launch fails, or the platform is unsupported, the dashboard retains a one-use manual fallback link valid for two minutes. Suite mode uses `twofa.localhost:<configured hub port>`; standalone mode uses its configured loopback host/port. Neither arbitrary URLs nor commands can be submitted to the native launcher.
-3. Exposes only email, status, phase, and fixed milestone logs. Passwords, TOTP secrets, access tokens, cookies, enrollment URLs, and private keys never enter snapshots, SSE, output, or persistence.
+3. Exposes only email, status, phase, and fixed milestone logs. Passwords, TOTP secrets, access tokens, cookies, enrollment URLs, and private keys never enter bulk Passkey snapshots, SSE, or output. The Passkey queue/handoff remains RAM-only. After a successful login, once the handoff attempt finishes (including a failed handoff), an internal callback reuses that session for the configured read-only plan/Usage/payment inspection and saves a completed Live `check_only` row in the main Check list. This does not enqueue another login, rotate 2FA, logout, or write rotation history/output. The main Check row stores email/password/current TOTP under the existing SQLite policy; bearer/cookies never enter persistence, logs, or SSE. The callback never overwrites an existing row, including rows with a newer secret. Later security actions remain manual and retain their fresh-login verification. Inspection/persistence/conflict failures produce a fixed warning without failing a prepared handoff; cancellation propagates. Clearing Check during inspection discards the pending result, and recovery of a saved completed row never queues login.
 4. Each bulk job can issue one handoff. Only queued/running jobs lock the account. A later explicit submission can create a fresh job for the same account with the newly entered credentials, keeping previous terminal jobs and issued links. Retry cannot overlap another active passkey job for the same email. A restart loses all bulk jobs and pending handoffs.
 5. The UI keeps the entered input while the page remains open and failed submissions preserve it. Opening a window never means WebAuthn enrollment succeeded. Clearing jobs, leaving the page, or engine shutdown does not close the operator's Chrome windows. The explicit `Đóng tất cả cửa sổ` action runs immediately without a confirmation dialog and closes only the Chrome processes tracked by `PasskeyWindows`; it never scans or closes the operator's normal Chrome windows or tabs. The passkey SSE stays connected while `/passkey` is visible or while automatic handoffs remain pending, even when Chrome hides the page.
 
@@ -1169,7 +1272,7 @@ The old factor is disabled before the replacement is enrolled and activated. The
 
 enable_2fa() can attach secret, factor_id, and session_id to MfaError.partial_state after enrollment. TwoFAService.rotate() currently converts that exception to TwoFAFlowError without forwarding partial state to the job checkpoint.
 
-The highest-risk case is activation succeeding server-side while its response is lost: the old secret may fail and the new secret may never reach SQLite. rotated_pending_verify protection starts only after rotate_2fa() returns successfully.
+The highest-risk case is activation succeeding server-side while its response is lost: the old secret may fail and the new secret may never reach SQLite. rotated_pending_verify protection starts only after rotate_2fa() returns successfully. This also applies to imported-session rotation; its mutation marker prevents replay but cannot recover an uncheckpointed secret. Manual account recovery may be required. A persistent storage outage can also prevent the new-secret checkpoint from reaching disk.
 
 ### Frontend mode is not a backend safety gate
 
@@ -1215,6 +1318,9 @@ Do not revive signup, browser automation, Outlook, iCloud, payment, or session-e
 26. Bulk passkey jobs are RAM-only, use one handoff per account, never persist credentials or enrollment URLs, and never claim WebAuthn completion.
 27. The dashboard can select multiple successful Live rows for logout. Each selected account reuses the confirmed single-account route exactly once, with bounded client concurrency, no automatic retry, and independent failures.
 28. Live journals are immutable historical observations, not recoverable jobs. Selection never replaces the operational queue, promotes credentials, or authenticates; queue clearing never deletes journals.
+29. Imported session bearer tokens stay RAM-only; neither client drafts nor job persistence, snapshots, SSE, logs, history, or errors may retain them.
+30. Session-backed rotation requires explicit confirmation, matching upstream identity, and a durable mutation marker; missing RAM tokens or an existing marker never authorize replay.
+31. Imported-job recovery with a saved new-secret checkpoint verifies only; without one it fails closed. Session import never accepts Codex OAuth as a ChatGPT Web session.
 
 ## 26. Agent change-impact map
 
@@ -1222,6 +1328,7 @@ Do not revive signup, browser automation, Outlook, iCloud, payment, or session-e
 |---|---|---|
 | Startup, host, token, route, response headers | server.py, macos_integration.py | filtered export API and macOS tests |
 | Queue, worker health, retry, recovery | jobs.py, JobRepository | test_worker_resilience.py |
+| Session JSON import | session_import.py, service.py.rotate_session, jobs.py.add_session/_run, server.py, session-ui.js | test_session_import.py, test_session_jobs.py, test_session_api.py, test_session_ui.js |
 | Password queue, HTTP mutation, recovery | password_jobs.py, password_service.py, password_phase.py | test_password_feature.py |
 | Recheck or per-row Change 2FA | jobs.py, app.js | test_job_recheck.py, filtered export API tests |
 | Delete all chats | session_phase.py, service.py, jobs.py, server.py, app.js | test_delete_all_chats.py, test_delete_chats_ui.js |
@@ -1262,6 +1369,10 @@ password feature tests.
 | tests/test_job_recheck.py | Recheck remains non-mutating |
 | tests/test_macos_integration.py | Menu helper command and launch conditions |
 | tests/test_password_feature.py | Settings secrecy, HTTP contract, mutation checkpoint, ambiguity recovery, atomic promotion, separate API |
+| tests/test_session_import.py | Strict bounded JSON, identity/expiry validation, OAuth-export rejection, fixed-host identity check, safe errors, service mutation/checkpoint/verification order and fail-closed guards |
+| tests/test_session_jobs.py | RAM-only token lifecycle, durable marker, verification-only recovery, persistence failure and same-account conflict guards |
+| tests/test_session_api.py | Token/confirmation requirements, body bound, safe snapshots, no-store/nosniff and status mapping |
+| tests/test_session_ui.js | Separate confirmed dialog, one-shot submission, sensitive-field cleanup and late-file-read protection |
 | tests/test_twofa_history.py | Atomic verified history, ordering, backfill, queue independence |
 | tests/test_mysql_sync.py | Offline/restart recovery, lost acknowledgement, racing updates/deletes, history independence, migration, privacy; optional live loopback MySQL test |
 | tests/test_live_journals.py | Verified Live capture, deep copy, persistence after clear/restart, additive v17 migration, auth/headers/privacy, no requeue, offline replication |
@@ -1280,11 +1391,13 @@ password feature tests.
 | tests/test_inspection_options_ui.js | Compact switches, Settings payload, and explicit disabled states |
 | tests/test_realtime_ui.js | Event batching and output refresh trigger |
 | tests/test_event_connection_lifecycle.js | Foreground-only 2FA SSE, lazy password SSE, pagehide cleanup |
+| tests/test_account_input_ui.js | Shared paste normalization, ambiguous-input preservation, selection replacement, input event, and exact three-editor wiring |
 | tests/test_password_ui.js | Separate password DOM/API wiring and sensitive-state cleanup |
 | tests/test_password_history_ui.js | Email filtering, credential-field parsing, and filtered-copy selection |
 | tests/test_delete_chats_ui.js | Eligible row action, destructive confirmation copy, payload, and pending lock |
 
-Run from repository root:
+Run from the TwoFA module root (use the suite-root `.venv/bin/python` and
+bundled Node executable when there is no module-local runtime):
 
 ~~~bash
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
@@ -1293,13 +1406,16 @@ node tests/test_payment_ui.js
 node tests/test_delete_chats_ui.js
 node tests/test_inspection_options_ui.js
 node tests/test_realtime_ui.js
+node tests/test_account_input_ui.js
 node tests/test_password_ui.js
+node tests/test_session_ui.js
 node tests/test_password_history_ui.js
 node tests/test_live_journals_ui.js
 .venv/bin/python 'change 2fa community/server.py' --check-runtime-dependencies
 .venv/bin/python -m compileall -q \
   'change 2fa community' session_phase.py request_phase.py password_phase.py mfa_phase.py db
 node --check 'change 2fa community/static/app.js'
+node --check 'change 2fa community/static/session-ui.js'
 node --check 'change 2fa community/static/password-ui.js'
 node --check 'change 2fa community/static/password-history-ui.js'
 node --check 'change 2fa community/static/realtime-ui.js'
@@ -1474,3 +1590,7 @@ credential-bearing, and use no-store/nosniff. Their line format remains:
 ~~~text
 email|VERIFIED_NEW_PASSWORD|CURRENT_TOTP_SECRET
 ~~~
+
+### 2026-10-29 — Selected-account combined action
+
+- Design direction: preserve the compact navy queue toolbar, existing green button, typography, spacing, badge and responsive wrapping. Replace the selected-account key icon with the existing route icon and use the explicit label `Đổi 2FA + Logout`. Pending starts display `Đang bắt đầu…`; archive views hide the action and busy/ineligible selections cannot start it. No new design tokens or animation.

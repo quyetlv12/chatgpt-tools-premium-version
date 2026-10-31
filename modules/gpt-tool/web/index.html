@@ -16,7 +16,7 @@
           <div class="section-heading"><span class="section-index">01</span><div><h2>Định dạng</h2><p>Chọn đầu ra</p></div></div>
           <div class="formats" id="formats" role="radiogroup" aria-label="Định dạng xuất"></div>
           <div class="sidebar-divider"></div>
-          <div class="sidebar-footnote"><span class="tiny-lock" aria-hidden="true">⌁</span><span>Chạy cục bộ · token không rời khỏi máy</span></div>
+          <div class="sidebar-footnote"><span class="tiny-lock" aria-hidden="true">⌁</span><span>Chạy cục bộ · token chỉ gửi tới đích bạn bật</span></div>
         </aside>
 
         <section class="workspace-card">
@@ -35,6 +35,11 @@
             <div class="helper-row"><span>Khoảng trắng quanh dấu <b>|</b> được tự động xử lý.</span><span class="secure-label"><span aria-hidden="true">●</span> local only</span></div>
             <label class="format-confirmation" id="format-confirmation"><input type="checkbox" id="auto-import" checked aria-describedby="auto-import-help"><span id="format-confirmation-text"></span></label>
             <p class="helper-row" id="auto-import-help">Bỏ chọn để chỉ xuất JSON, không tự mở hoặc nhập vào tool đích.</p>
+            <div class="sub2api-config" id="sub2api-config" hidden>
+              <div class="field"><label for="sub2api-url">URL Sub2API</label><input type="url" id="sub2api-url" placeholder="https://sub2api.example.com" autocomplete="url" spellcheck="false"></div>
+              <div class="field"><label for="sub2api-api-key">Admin API Key <span>(không lưu trên trình duyệt)</span></label><input type="password" id="sub2api-api-key" placeholder="Nhập khóa quản trị Sub2API" autocomplete="new-password" spellcheck="false"></div>
+              <div class="config-actions action-row"><button type="button" class="ghost" id="save-sub2api">Lưu cấu hình</button><button type="button" class="ghost" id="clear-sub2api" disabled>Xóa cấu hình</button><span id="sub2api-config-status" role="status" aria-live="polite"></span></div>
+            </div>
             <div class="action-row"><button type="button" class="primary" id="run-export"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 3 14 9-14 9Z"></path></svg>Chạy tool</button><button type="button" class="ghost" id="open-out"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>Mở file hệ thống</button></div>
           </div>
 

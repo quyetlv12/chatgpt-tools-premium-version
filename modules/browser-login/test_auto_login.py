@@ -606,6 +606,7 @@ class WebLoginQueueTests(unittest.TestCase):
             reload_after=None,
             codex_web=False,
             browser_id='auto',
+            mobile_enabled=False,
             desktop_auth_url=None,
         ):
             with lock:

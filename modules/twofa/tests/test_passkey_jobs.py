@@ -132,6 +132,63 @@ class PasskeyBulkManagerTests(IsolatedAsyncioTestCase):
             release.set()
             await manager.shutdown()
 
+    async def test_stop_all_cancels_queued_and_running_jobs(self) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def pending(**_kwargs):
+            entered.set()
+            await release.wait()
+            return URL
+
+        service = SimpleNamespace(prepare_passkey=AsyncMock(side_effect=pending))
+        manager = PasskeyJobManager(service=service, max_concurrent=1)
+        manager.add([
+            "first@example.com|password|TOTP",
+            "second@example.com|password|TOTP",
+        ])
+        manager.start()
+        try:
+            await entered.wait()
+            self.assertEqual(manager.stop_all(), 2)
+            release.set()
+            await asyncio.wait_for(manager._queue.join(), timeout=1)
+            self.assertTrue(all(job.status == "cancelled" for job in manager.jobs.values()))
+            self.assertTrue(all(job.error == "Đã dừng bởi người dùng" for job in manager.jobs.values()))
+        finally:
+            release.set()
+            await manager.shutdown()
+
+
+class PasskeyCheckWiringTests(IsolatedAsyncioTestCase):
+    async def test_bridge_uses_current_main_manager(self):
+        self.assertIs(server.passkey_manager.on_authenticated, server.record_passkey_check)
+        main = SimpleNamespace(add_authenticated_check=AsyncMock())
+        values = dict(email="bridge@example.test", password="fixture-password", secret="FIXTURE",
+                      session={"accessToken": "fixture-bearer"})
+        with (
+            patch.object(server, "manager", main),
+            patch.object(server, "password_manager", SimpleNamespace(jobs={})),
+            patch.object(server, "combined_manager", SimpleNamespace(is_busy=lambda _: False)),
+        ):
+            await server.record_passkey_check(**values)
+        main.add_authenticated_check.assert_awaited_once_with(**values)
+
+    async def test_bridge_skips_conflicting_combined_or_password_work(self):
+        main = SimpleNamespace(add_authenticated_check=AsyncMock())
+        for combined_busy in (True, False):
+            password_jobs = {} if combined_busy else {"password": SimpleNamespace(
+                email="bridge@example.test", status="running",
+            )}
+            with (
+                patch.object(server, "manager", main),
+                patch.object(server, "password_manager", SimpleNamespace(jobs=password_jobs)),
+                patch.object(server, "combined_manager", SimpleNamespace(is_busy=lambda _: combined_busy)),
+                self.assertRaises(ValueError),
+            ):
+                await server.record_passkey_check(email="bridge@example.test")
+        main.add_authenticated_check.assert_not_awaited()
+
 
 class PasskeyBulkApiTests(TestCase):
     def setUp(self) -> None:
@@ -235,6 +292,15 @@ class PasskeyBulkApiTests(TestCase):
     def test_close_passkey_windows_requires_authentication(self):
         response = self.client.post("/api/passkey/windows/close")
         self.assertEqual(response.status_code, 401)
+
+    def test_stop_all_passkey_jobs_requires_authentication_and_returns_count(self):
+        response = self.client.post("/api/passkey/jobs/stop-all")
+        self.assertEqual(response.status_code, 401)
+        with patch.object(self.manager, "stop_all", return_value=1) as stop_all:
+            response = self.client.post("/api/passkey/jobs/stop-all", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"stopped": 1})
+        stop_all.assert_called_once_with()
 
     def test_completed_account_can_be_submitted_again_with_new_account(self):
         self.manager.issue_handoff("ready", self.handoffs)

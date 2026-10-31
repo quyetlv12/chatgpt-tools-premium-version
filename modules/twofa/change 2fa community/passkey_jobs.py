@@ -10,7 +10,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from service import TwoFAService
 
@@ -75,8 +75,10 @@ class PasskeyJobManager:
         *,
         max_concurrent: int = MAX_CONCURRENT,
         job_timeout: float = JOB_TIMEOUT,
+        on_authenticated: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self.service = service or TwoFAService()
+        self.on_authenticated = on_authenticated
         self.max_concurrent = max(1, min(int(max_concurrent), 10))
         self.job_timeout = max(30.0, min(float(job_timeout), 600.0))
         self.jobs: dict[str, PasskeyJob] = {}
@@ -238,6 +240,16 @@ class PasskeyJobManager:
             self._append_log(job, "[auth] Đăng nhập tạm thời chưa thành công; đang thử lại...")
 
     async def _run(self, job: PasskeyJob) -> None:
+        async def record_check(session: dict[str, Any]) -> None:
+            try:
+                await self.on_authenticated(
+                    email=job.email, password=job.password, secret=job.secret, session=session,
+                )
+            except Exception:
+                self._append_log(job, "[check] Chưa thêm được vào danh sách Check; hãy kiểm tra ở màn hình chính.")
+            else:
+                self._append_log(job, "[check] Đã thêm vào danh sách Check bằng phiên vừa đăng nhập.")
+
         try:
             job.status = "running"
             job.phase = "authenticating"
@@ -251,6 +263,7 @@ class PasskeyJobManager:
                 secret=job.secret,
                 timeout=self.job_timeout,
                 log=lambda message: self._safe_service_log(job, message),
+                **({"on_authenticated": record_check} if self.on_authenticated else {}),
             )
             job.handoff_url = url
             job.phase = "handoff_ready"
@@ -318,6 +331,17 @@ class PasskeyJobManager:
             job.finished_at = time.time()
             self._broadcast(job)
         return job.snapshot()
+
+    def stop_all(self) -> int:
+        """Stop every queued or running bulk passkey job."""
+        self._assert_event_loop_thread()
+        active_ids = [
+            job.id for job in self.jobs.values()
+            if job.status in {"queued", "running"}
+        ]
+        for job_id in active_ids:
+            self.stop(job_id)
+        return len(active_ids)
 
     def delete(self, job_id: str) -> None:
         self._assert_event_loop_thread()

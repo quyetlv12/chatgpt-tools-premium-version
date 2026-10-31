@@ -20,7 +20,7 @@ import certifi
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -99,9 +99,11 @@ from db.mysql_sync import MySQLSync  # noqa: E402
 from db.repositories import LiveJournalRepository  # noqa: E402
 from jobs import TwoFAJobManager  # noqa: E402
 from macos_integration import launch_menu_bar, menu_bar_command  # noqa: E402
+from combined_jobs import CombinedWorkflowManager  # noqa: E402
 from passkey_jobs import PasskeyJobManager  # noqa: E402
 from password_jobs import PasswordJobManager  # noqa: E402
 from service import TwoFAFlowError  # noqa: E402
+from session_import import MAX_SESSION_BYTES, parse_session  # noqa: E402
 from passkey_service import PasskeyHandoffs  # noqa: E402
 from passkey_windows import PasskeyWindows  # noqa: E402
 
@@ -158,6 +160,12 @@ class PasskeyLaunchRequest(BaseModel):
     native_window: bool = False
 
 
+class CombinedWorkflowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: Literal["START_COMBINED"]
+
+
 class PasswordSettingsRequest(BaseModel):
     # Length/content validation is deliberately performed after SecretStr has
     # hidden the input. Pydantic constraint errors include the raw rejected
@@ -188,11 +196,26 @@ if not isinstance(auth_token, str) or len(auth_token) < 32:
     settings_repo.set("web.auth_token", auth_token)
 manager = TwoFAJobManager(job_repo, settings_repo)
 password_manager = PasswordJobManager(job_repo, settings_repo)
+
+
+async def record_passkey_check(**kwargs: Any) -> None:
+    email = kwargs["email"]
+    if combined_manager.is_busy(email) or any(
+        job.email.strip().casefold() == email.strip().casefold()
+        and job.status in {"queued", "running"}
+        for job in password_manager.jobs.values()
+    ):
+        raise ValueError("Tài khoản còn thao tác đang chạy; chưa thêm vào Check")
+    await manager.add_authenticated_check(**kwargs)
+
+
 passkey_manager = PasskeyJobManager(
     max_concurrent=int(manager.settings["twofa.max_concurrent"]),
     job_timeout=float(manager.settings["twofa.job_timeout"]),
+    on_authenticated=record_passkey_check,
 )
 passkey_handoffs = PasskeyHandoffs()
+combined_manager = CombinedWorkflowManager(manager)
 
 
 @asynccontextmanager
@@ -205,6 +228,7 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         try:
+            await combined_manager.shutdown()
             await passkey_manager.shutdown()
             await password_manager.shutdown()
             await manager.shutdown()
@@ -228,6 +252,9 @@ async def disable_passkey_ui_cache(request: Request, call_next):
     if request.url.path in {"/", "/passkey"} or request.url.path.startswith("/assets/"):
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
+    if request.url.path == "/api/session-jobs":
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -245,6 +272,12 @@ def assert_no_bulk_passkey_for_job(job_manager: Any, job_id: str) -> None:
     job = getattr(job_manager, "jobs", {}).get(job_id)
     if job is not None:
         assert_no_bulk_passkey(job.email)
+
+
+def assert_no_combined_for_job(job_manager: Any, job_id: str) -> None:
+    job = getattr(job_manager, "jobs", {}).get(job_id)
+    if job is not None and combined_manager.is_busy(job.email):
+        raise ValueError("Tài khoản đang chạy luồng đổi 2FA → logout; vui lòng chờ")
 
 
 @app.get("/api/bootstrap")
@@ -319,6 +352,8 @@ async def add_jobs(request: BatchRequest) -> dict[str, Any]:
     try:
         for line in request.lines:
             email = line.split("|", 1)[0]
+            if combined_manager.is_busy(email):
+                raise ValueError("Tài khoản đang chạy luồng đổi 2FA → logout; vui lòng chờ")
             if passkey_manager.is_busy(email):
                 raise ValueError("Tài khoản đang thêm passkey hàng loạt; vui lòng chờ")
             if any(
@@ -331,6 +366,46 @@ async def add_jobs(request: BatchRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+
+@app.post("/api/session-jobs", dependencies=[Depends(require_token)])
+async def add_session_job(request: Request) -> JSONResponse:
+    # Manual bounded parsing avoids validation responses echoing credentials.
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_SESSION_BYTES * 2:
+            raise HTTPException(status_code=413, detail="Dữ liệu session quá lớn")
+    try:
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            raise ValueError
+        if data.get("confirm") != "CHANGE_2FA_FROM_SESSION":
+            raise ValueError
+        email, password, raw = data.get("email"), data.get("password"), data.get("session_json")
+        if not isinstance(email, str) or not isinstance(raw, str):
+            raise ValueError
+        if not isinstance(password, str) or not password or len(password) > 1024 or "\n" in password or "\r" in password:
+            raise ValueError
+    except (ValueError, TypeError, RecursionError):
+        raise HTTPException(status_code=422, detail="Cần email, mật khẩu hiện tại, session JSON và xác nhận đổi 2FA") from None
+    try:
+        session = parse_session(raw, email)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    try:
+        if combined_manager.is_busy(email):
+            raise ValueError("Tài khoản đang chạy luồng đổi 2FA → logout; vui lòng chờ")
+        assert_no_bulk_passkey(email)
+        if any(other.email.strip().casefold() == email.strip().casefold()
+               and other.status in {"queued", "running"}
+               for other in password_manager.jobs.values()):
+            raise ValueError("Tài khoản đang đổi mật khẩu; vui lòng chờ")
+        job = manager.add_session(email, password, session)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Tài khoản đang có thao tác khác hoặc danh sách đang được dọn; vui lòng chờ") from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Chưa lưu được job session; chưa chạy đổi 2FA") from None
+    return JSONResponse({"job": job})
 
 @app.get("/api/jobs/export", dependencies=[Depends(require_token)])
 async def export_jobs(view: ExportView = "all") -> PlainTextResponse:
@@ -380,6 +455,7 @@ async def twofa_history() -> JSONResponse:
 async def change_job_2fa(job_id: str) -> dict[str, Any]:
     try:
         assert_no_bulk_passkey_for_job(manager, job_id)
+        assert_no_combined_for_job(manager, job_id)
         return {"job": manager.enqueue_change_2fa(job_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy job") from exc
@@ -391,6 +467,7 @@ async def change_job_2fa(job_id: str) -> dict[str, Any]:
 async def retry_job(job_id: str) -> dict[str, Any]:
     try:
         assert_no_bulk_passkey_for_job(manager, job_id)
+        assert_no_combined_for_job(manager, job_id)
         return {"job": manager.retry(job_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy job") from exc
@@ -402,6 +479,7 @@ async def retry_job(job_id: str) -> dict[str, Any]:
 async def recheck_job(job_id: str) -> dict[str, Any]:
     try:
         assert_no_bulk_passkey_for_job(manager, job_id)
+        assert_no_combined_for_job(manager, job_id)
         return {"job": manager.recheck(job_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy job") from exc
@@ -413,6 +491,7 @@ async def recheck_job(job_id: str) -> dict[str, Any]:
 async def refresh_job_usage(job_id: str) -> dict[str, Any]:
     try:
         assert_no_bulk_passkey_for_job(manager, job_id)
+        assert_no_combined_for_job(manager, job_id)
         return {"job": await manager.refresh_usage(job_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy job") from exc
@@ -429,6 +508,7 @@ async def delete_job_chats(
 ) -> dict[str, Any]:
     try:
         assert_no_bulk_passkey_for_job(manager, job_id)
+        assert_no_combined_for_job(manager, job_id)
         return {"job": await manager.delete_all_chats(job_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy job") from exc
@@ -442,6 +522,7 @@ async def delete_job_chats(
 async def start_job_passkey(job_id: str, _request: PasskeyRequest) -> JSONResponse:
     try:
         job = manager.jobs[job_id]
+        assert_no_combined_for_job(manager, job_id)
         if job is not None and any(other.email.strip().casefold() == job.email.strip().casefold()
                                    and other.status in {"queued", "running"}
                                    for other in password_manager.jobs.values()):
@@ -478,6 +559,8 @@ async def add_passkey_jobs(request: PasskeyBatchRequest) -> dict[str, Any]:
     try:
         for line in request.lines:
             email = line.split("|", 1)[0]
+            if combined_manager.is_busy(email):
+                raise ValueError("Tài khoản đang chạy luồng đổi 2FA → logout; vui lòng chờ")
             manager.assert_not_logging_out(email)
             if passkey_manager.is_busy(email):
                 raise ValueError("Tài khoản đang thêm passkey hàng loạt; vui lòng chờ")
@@ -540,6 +623,11 @@ async def retry_passkey_job(job_id: str) -> dict[str, Any]:
 async def close_passkey_windows() -> dict[str, int]:
     closed = await asyncio.to_thread(passkey_windows.close_all)
     return {"closed": closed}
+
+
+@app.post("/api/passkey/jobs/stop-all", dependencies=[Depends(require_token)])
+async def stop_all_passkey_jobs() -> dict[str, int]:
+    return {"stopped": passkey_manager.stop_all()}
 
 
 @app.post("/api/passkey/jobs/{job_id}/stop", dependencies=[Depends(require_token)])
@@ -627,12 +715,67 @@ async def launch_passkey(launch_token: str):
         return PlainTextResponse("Liên kết đã dùng hoặc hết hạn. Chuẩn bị passkey lại trong tool.", status_code=410, headers=headers)
 
 
+@app.post("/api/jobs/{job_id}/combined/start", dependencies=[Depends(require_token)])
+async def start_combined_workflow(job_id: str, request: CombinedWorkflowRequest) -> JSONResponse:
+    if request.confirm != "START_COMBINED":
+        raise HTTPException(status_code=422, detail="Cần xác nhận bắt đầu luồng đổi 2FA và logout")
+    try:
+        job = manager.jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        assert_no_bulk_passkey(job.email)
+        if any(other.email.strip().casefold() == job.email.strip().casefold()
+               and other.status in {"queued", "running"}
+               for other in password_manager.jobs.values()):
+            raise ValueError("Tài khoản đang đổi mật khẩu; vui lòng chờ")
+        result = await combined_manager.start(job_id)
+        return JSONResponse(result, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy job") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except TwoFAFlowError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+@app.get("/api/combined", dependencies=[Depends(require_token)])
+async def list_combined_workflows() -> JSONResponse:
+    return JSONResponse(
+        {"operations": combined_manager.snapshots()},
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/api/combined/{operation_id}", dependencies=[Depends(require_token)])
+async def get_combined_workflow(operation_id: str) -> JSONResponse:
+    try:
+        result = combined_manager.snapshot(operation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy luồng gộp") from exc
+    return JSONResponse(result, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/combined/{operation_id}/stop", dependencies=[Depends(require_token)])
+async def stop_combined_workflow(operation_id: str) -> JSONResponse:
+    try:
+        result = combined_manager.stop(operation_id)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy luồng gộp") from exc
+
+
+@app.post("/api/combined/stop-all", dependencies=[Depends(require_token)])
+async def stop_all_combined_workflows() -> dict[str, int]:
+    return {"stopped": combined_manager.stop_all()}
+
+
 @app.post("/api/jobs/{job_id}/logout-sessions", dependencies=[Depends(require_token)])
 async def logout_job_sessions(job_id: str, _request: LogoutSessionsRequest) -> dict[str, Any]:
     try:
         job = getattr(manager, "jobs", {}).get(job_id)
-        if job is not None:
-            assert_no_bulk_passkey(job.email)
+        if job is None:
+            raise KeyError(job_id)
+        assert_no_bulk_passkey(job.email)
+        assert_no_combined_for_job(manager, job_id)
         if any(other.email.strip().casefold() == job.email.strip().casefold()
                and other.status in {"queued", "running"}
                for other in password_manager.jobs.values()):
@@ -797,6 +940,8 @@ async def add_password_jobs(request: PasswordBatchRequest) -> dict[str, Any]:
     try:
         for line in request.lines:
             email = line.split("|", 1)[0]
+            if combined_manager.is_busy(email):
+                raise ValueError("Tài khoản đang chạy luồng đổi 2FA → logout; vui lòng chờ")
             manager.assert_not_logging_out(email)
             assert_no_bulk_passkey(email)
     except ValueError as exc:
@@ -813,6 +958,8 @@ async def retry_password_job(job_id: str) -> dict[str, Any]:
         job = password_manager.jobs.get(job_id)
         if job is not None:
             manager.assert_not_logging_out(job.email)
+            if combined_manager.is_busy(job.email):
+                raise ValueError("Tài khoản đang chạy luồng đổi 2FA → logout; vui lòng chờ")
             assert_no_bulk_passkey(job.email)
         return {"job": password_manager.retry(job_id)}
     except KeyError as exc:

@@ -65,6 +65,8 @@ class TwoFAJob:
     sessions_logging_out: bool = False
     passkey_preparing: bool = False
     rotated_pending_verify: bool = False
+    session_imported: bool = False
+    session_mutation_started: bool = False
     login_verified: bool = False
     retry_count: int = 0
     created_at: float = field(default_factory=time.time)
@@ -74,6 +76,8 @@ class TwoFAJob:
 
     @property
     def retryable(self) -> bool:
+        if self.session_imported and (not self.rotated_pending_verify or self.status == "success"):
+            return False
         return self.error_kind not in {"account_die", "invalid_credentials"}
 
     def snapshot(self) -> dict[str, Any]:
@@ -98,6 +102,8 @@ class TwoFAJob:
             "passkey_preparing": self.passkey_preparing,
             "retryable": self.retryable,
             "rotated_pending_verify": self.rotated_pending_verify,
+            "session_imported": self.session_imported,
+            "session_mutation_started": self.session_mutation_started,
             "login_verified": self.login_verified,
             "retry_count": self.retry_count,
             "created_at": self.created_at,
@@ -125,6 +131,7 @@ class TwoFAJobManager:
         self.settings_repo = settings_repo
         self.service = service or TwoFAService()
         self.jobs: dict[str, TwoFAJob] = {}
+        self._sessions: dict[str, dict[str, Any]] = {}
         self.order: list[str] = []
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
@@ -136,6 +143,7 @@ class TwoFAJobManager:
         self._planned_worker_exits: set[asyncio.Task] = set()
         self._clear_lock = asyncio.Lock()
         self._clear_in_progress = False
+        self._clear_generation = 0
         self._worker_restarts = 0
         self._persistence_failures = 0
         self._last_worker_error: str | None = None
@@ -199,6 +207,8 @@ class TwoFAJobManager:
                 usage_enabled=state.get("usage_enabled") is not False,
                 payment_methods_enabled=state.get("payment_methods_enabled") is not False,
                 rotated_pending_verify=bool(state.get("rotated_pending_verify")),
+                session_imported=bool(state.get("session_imported")),
+                session_mutation_started=bool(state.get("session_mutation_started")),
                 login_verified=bool(state.get("login_verified")),
                 retry_count=int(state.get("retry_count") or 0),
                 created_at=float(row.get("created_at") or time.time()),
@@ -248,6 +258,8 @@ class TwoFAJobManager:
     def _state(self, job: TwoFAJob) -> str:
         return json.dumps({
             "rotated_pending_verify": job.rotated_pending_verify,
+            "session_imported": job.session_imported,
+            "session_mutation_started": job.session_mutation_started,
             "login_verified": job.login_verified,
             "retry_count": job.retry_count,
             "mode": job.mode,
@@ -344,9 +356,10 @@ class TwoFAJobManager:
             self._queue.put_nowait(None)
 
     async def shutdown(self) -> None:
+        self._assert_event_loop_thread()
+        self._sessions.clear()
         if not self._started and not self._workers:
             return
-        self._assert_event_loop_thread()
         self._stopping = True
         self._started = False
         workers = list(self._workers)
@@ -488,6 +501,92 @@ class TwoFAJobManager:
             self._broadcast(job)
         return created
 
+    async def add_authenticated_check(
+        self, *, email: str, password: str, secret: str, session: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Publish a completed Check from a bulk Passkey login; never queue another login."""
+        self._assert_event_loop_thread()
+        generation = self._clear_generation
+
+        def assert_available() -> None:
+            if self._clear_in_progress or self._stopping or generation != self._clear_generation:
+                raise ValueError("Danh sách Check đang dọn hoặc đã thay đổi; chưa thêm tài khoản")
+            self.assert_not_logging_out(email)
+            if any(other.email.strip().casefold() == email.strip().casefold() and (
+                other.status not in TERMINAL or other.usage_refreshing or other.chat_deleting
+            ) for other in self.jobs.values()):
+                raise ValueError("Tài khoản còn thao tác đang chạy; chưa thêm vào Check")
+
+        assert_available()
+        job = TwoFAJob(
+            id=uuid.uuid4().hex, email=email, password=password, secret=secret,
+            mode="check_only", started_at=time.time(),
+            usage_enabled=bool(self.settings["twofa.read_usage"]),
+            payment_methods_enabled=bool(self.settings["twofa.read_payment_methods"]),
+        )
+        result = await self.service.check_authenticated(
+            session=session, email=email, secret=secret,
+            timeout=float(self.settings["twofa.job_timeout"]), log=lambda _message: None,
+            read_usage=job.usage_enabled, read_payment_methods=job.payment_methods_enabled,
+        )
+        assert_available()
+        job.status = "success"
+        job.account_state = result.account_state
+        job.login_verified = result.login_verified
+        job.plan = result.plan
+        job.plan_source = result.plan_source
+        job.usage = result.usage
+        job.payment_methods = _safe_payment_methods(result.payment_methods)
+        job.billing_date = _safe_billing_date(result.billing_date)
+        job.finished_at = time.time()
+        self._persist(lambda: self.job_repo.create({
+            "id": job.id, "email": email, "combo": "[redacted]", "mail_mode": "none",
+            "status": job.status, "password": password, "secret": secret,
+            "account_check": self._state(job), "created_at": job.created_at,
+            "started_at": job.started_at, "finished_at": job.finished_at,
+            "job_type": JOB_TYPE,
+        }), "check_only")
+        self.jobs[job.id] = job
+        self.order.append(job.id)
+        self._broadcast(job)
+        return job.snapshot()
+
+    def add_session(self, email: str, password: str, session: dict[str, Any]) -> dict[str, Any]:
+        from session_import import parse_session
+
+        self._assert_event_loop_thread()
+        session = parse_session(json.dumps(session), email)
+        if not isinstance(password, str) or not password or len(password) > 1024 or "\n" in password or "\r" in password:
+            raise ValueError("Cần mật khẩu hiện tại để xác minh đăng nhập sau khi đổi 2FA")
+        if self._clear_in_progress:
+            raise ValueError("Đang dọn danh sách; vui lòng thử lại sau")
+        self.assert_not_logging_out(email)
+        if any(
+            other.email.strip().casefold() == email.strip().casefold()
+            and (other.status in {"queued", "running"} or other.usage_refreshing or other.chat_deleting)
+            for other in self.jobs.values()
+        ):
+            raise ValueError("Tài khoản đang có thao tác khác; vui lòng chờ")
+        job = TwoFAJob(
+            id=uuid.uuid4().hex, email=email.strip().casefold(), password=password,
+            secret="", session_imported=True,
+            usage_enabled=bool(self.settings["twofa.read_usage"]),
+            payment_methods_enabled=bool(self.settings["twofa.read_payment_methods"]),
+        )
+        self._persist(lambda: self.job_repo.create({
+            "id": job.id, "email": job.email, "combo": "[redacted]",
+            "mail_mode": "none", "status": "queued", "password": password,
+            "secret": "", "account_check": self._state(job),
+            "created_at": job.created_at, "job_type": JOB_TYPE,
+        }), "queued session")
+        self._sessions[job.id] = session
+        self.jobs[job.id] = job
+        self.order.append(job.id)
+        self._reconcile_workers()
+        self._queue.put_nowait(job.id)
+        self._broadcast(job)
+        return job.snapshot()
+
     async def _worker(self) -> None:
         while True:
             job_id = await self._queue.get()
@@ -510,9 +609,18 @@ class TwoFAJobManager:
         job.status = "running"
         job.error = None
         job.started_at = time.time()
+        completion_pending = False
 
         def log(message: str) -> None:
-            self._append_job_log(job, message)
+            if not job.session_imported:
+                self._append_job_log(job, message)
+
+        async def before_session_mutation() -> None:
+            job.session_mutation_started = True
+            self._persist(lambda: self.job_repo.update_status(
+                job.id, "running", account_check=self._state(job),
+            ), "session mutation checkpoint")
+            self._broadcast(job)
 
         async def checkpoint(new_secret: str) -> None:
             job.secret = new_secret
@@ -559,6 +667,17 @@ class TwoFAJobManager:
                     read_usage=job.usage_enabled,
                     read_payment_methods=job.payment_methods_enabled,
                 )
+            elif job.session_imported:
+                session = self._sessions.get(job.id)
+                if job.session_mutation_started or session is None:
+                    raise ValueError("Session không còn trong RAM hoặc thao tác đã bắt đầu; không tự đổi lại 2FA")
+                result = await self.service.rotate_session(
+                    session=session, email=job.email, password=job.password,
+                    timeout=timeout, checkpoint=checkpoint,
+                    before_mutation=before_session_mutation, log=log,
+                    read_usage=job.usage_enabled,
+                    read_payment_methods=job.payment_methods_enabled,
+                )
             else:
                 result = await self.service.rotate(
                     email=job.email,
@@ -586,6 +705,11 @@ class TwoFAJobManager:
             job.rotated_pending_verify = False
             job.status = "success"
             job.finished_at = time.time()
+            # Once an imported session has completed the upstream mutation and
+            # fresh login, any final persistence failure must remain
+            # recoverable through verify().  This applies even to a lightweight
+            # repository implementation without the atomic history helper.
+            completion_pending = bool(job.session_imported)
             complete_twofa = getattr(self.job_repo, "complete_twofa_success", None)
             if job.mode == "change_2fa" and job.login_verified and callable(complete_twofa):
                 self._persist(
@@ -616,8 +740,19 @@ class TwoFAJobManager:
             job.finished_at = time.time()
             self._persist_terminal(job, "cancelled")
         except Exception as exc:
+            if completion_pending and job.session_imported:
+                # Keep the durable secret checkpoint recoverable: retry must verify,
+                # never send a second non-idempotent rotation request.
+                job.rotated_pending_verify = True
+                job.login_verified = False
             job.status = "error"
             job.error = (str(exc).strip() or type(exc).__name__)[:240]
+            if job.session_imported:
+                job.error = (
+                    "Khóa mới đã lưu; chỉ thử xác minh đăng nhập lại, không đổi 2FA lần nữa."
+                    if job.rotated_pending_verify else
+                    "Chưa hoàn tất. Session đã xóa khỏi RAM; không tự chạy lại. Kiểm tra 2FA tài khoản trước khi nhập session mới."
+                )
             job.error_kind = str(getattr(exc, "error_kind", "technical_error"))
             job.account_state = str(getattr(exc, "account_state", job.account_state))
             job.finished_at = time.time()
@@ -626,6 +761,7 @@ class TwoFAJobManager:
                 delay = float(self.settings["twofa.auto_retry_delay"])
                 asyncio.create_task(self._delayed_retry(job.id, delay))
         finally:
+            self._sessions.pop(job.id, None)
             self._broadcast(job)
 
     def _should_auto_retry(self, job: TwoFAJob) -> bool:
@@ -651,6 +787,8 @@ class TwoFAJobManager:
         if job.status not in TERMINAL:
             raise ValueError("Job đang chạy hoặc đang chờ")
         if not job.retryable:
+            if job.session_imported:
+                raise ValueError("Job session không được đổi lại; chỉ retry khi đã lưu khóa mới và cần xác minh")
             label = "tài khoản die" if job.error_kind == "account_die" else "sai thông tin đăng nhập/2FA"
             raise ValueError(f"Không retry tự động: {label}")
         previous = (job.retry_count, job.status, job.error, job.error_kind, job.finished_at)
@@ -692,6 +830,8 @@ class TwoFAJobManager:
 
         fields = (
             "mode",
+            "session_imported",
+            "session_mutation_started",
             "status",
             "error",
             "error_kind",
@@ -711,6 +851,8 @@ class TwoFAJobManager:
         )
         previous = {field: getattr(job, field) for field in fields}
         job.mode = "check_only"
+        job.session_imported = False
+        job.session_mutation_started = False
         job.status = "queued"
         job.error = None
         job.error_kind = None
@@ -866,6 +1008,10 @@ class TwoFAJobManager:
 
     def assert_not_logging_out(self, email: str) -> None:
         # Keep the existing guard entry point used by both local workspaces.
+        if any(job.session_imported and job.status in {"queued", "running"}
+               and job.email.strip().casefold() == email.strip().casefold()
+               for job in self.jobs.values()):
+            raise ValueError("Tài khoản đang đổi 2FA bằng session; vui lòng chờ")
         if any(job.passkey_preparing and job.email.strip().casefold() == email.strip().casefold()
                for job in self.jobs.values()):
             raise ValueError("Tài khoản đang chuẩn bị passkey; vui lòng chờ")
@@ -970,6 +1116,7 @@ class TwoFAJobManager:
             except JobPersistenceError:
                 job.status, job.error, job.error_kind, job.finished_at = previous
                 raise
+            self._sessions.pop(job.id, None)
             self._broadcast(job)
         return job.snapshot()
 
@@ -991,6 +1138,7 @@ class TwoFAJobManager:
             raise ValueError("Không thể xóa job đang chạy")
         self.job_repo.delete(job_id)
         self.jobs.pop(job_id, None)
+        self._sessions.pop(job_id, None)
         self.order = [item for item in self.order if item != job_id]
         self._broadcast_raw({"type": "removed", "id": job_id})
 
@@ -1018,7 +1166,9 @@ class TwoFAJobManager:
         ):
             raise ValueError("Hãy dừng toàn bộ job trước khi dọn danh sách")
         count = self.job_repo.delete_all(JOB_TYPE)
+        self._clear_generation += 1
         self.jobs.clear()
+        self._sessions.clear()
         self.order.clear()
         self._broadcast_raw({"type": "snapshot", "jobs": []})
         return count
@@ -1040,6 +1190,7 @@ class TwoFAJobManager:
                 for job in self.jobs.values()
             ):
                 raise ValueError("Hãy dừng toàn bộ job trước khi dọn danh sách")
+            self._clear_generation += 1
             if not self.jobs:
                 return 0
 
@@ -1054,6 +1205,7 @@ class TwoFAJobManager:
                 # is cancelled while the non-cancellable thread is finishing.
                 count = await delete_task
                 self.jobs.clear()
+                self._sessions.clear()
                 self.order.clear()
                 self._broadcast_raw({"type": "snapshot", "jobs": []})
                 raise
@@ -1061,6 +1213,7 @@ class TwoFAJobManager:
                 self._clear_in_progress = False
 
             self.jobs.clear()
+            self._sessions.clear()
             self.order.clear()
             self._broadcast_raw({"type": "snapshot", "jobs": []})
             return int(count)
