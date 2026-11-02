@@ -1769,6 +1769,7 @@
   }
   $('clear-all').addEventListener('click', clearAllJobs);
   document.addEventListener('visibilitychange', syncEventVisibility);
+  window.addEventListener('pageshow', syncEventVisibility);
   window.addEventListener('pagehide', disconnectEvents);
   window.SessionImportUI?.init({ api, toast, ready: () => Boolean(state.token), onJob: job => {
     state.jobs.set(job.id, job);

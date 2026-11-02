@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const root = path.join(__dirname, '..');
 const appSource = fs.readFileSync(path.join(root, 'change 2fa community/static/app.js'), 'utf8');
@@ -29,5 +30,79 @@ assert.match(passwordSource, /function closeWorkspace\(\)[\s\S]*?disconnectEvent
 assert.match(passwordSource, /password-workspace'\)\.addEventListener\('close', closeWorkspace\)/);
 assert.match(passwordSource, /document\.addEventListener\('visibilitychange', syncEventVisibility\)/);
 assert.match(passwordSource, /window\.addEventListener\('pagehide', disconnectEvents\)/);
+
+// Returning from Passkey can restore the dashboard without rerunning init()
+// or firing visibilitychange. Exercise the actual lifecycle and snapshot code.
+const listeners = {};
+const streams = [];
+let renderedJobs = [];
+const existingJob = { id: 'existing', mode: 'check_only', status: 'success' };
+const passkeyJob = { id: 'from-passkey', mode: 'check_only', status: 'success' };
+const state = {
+  token: 'synthetic-local-token',
+  jobs: new Map([[existingJob.id, existingJob]]),
+  selectedLogoutJobIds: new Set([existingJob.id]),
+  pendingRechecks: new Set(),
+  pendingRowChangeResults: new Set(),
+  filter: 'live',
+};
+const eventTarget = target => ({
+  addEventListener(type, handler) { listeners[`${target}:${type}`] = handler; },
+});
+const context = {
+  state,
+  document: { ...eventTarget('document'), visibilityState: 'visible' },
+  window: {
+    ...eventTarget('window'),
+    RealtimeUI: require('../change 2fa community/static/realtime-ui.js'),
+  },
+  EventSource: class {
+    constructor(url) { this.url = url; this.closed = false; streams.push(this); }
+    close() { this.closed = true; }
+    receive(payload) { this.onmessage({ data: JSON.stringify(payload) }); }
+  },
+  render() { renderedJobs = [...state.jobs.keys()]; },
+  renderConnection() {},
+  refreshOutput() { assert.fail('check snapshots must not refresh 2FA output'); },
+  console,
+};
+vm.createContext(context);
+const lifecycleStart = appSource.indexOf('  function flushRealtimeEvents(');
+const lifecycleEnd = appSource.indexOf('  async function init()', lifecycleStart);
+assert.ok(lifecycleStart >= 0 && lifecycleEnd > lifecycleStart);
+vm.runInContext(appSource.slice(lifecycleStart, lifecycleEnd), context);
+const registrations = appSource.match(/(?:document|window)\.addEventListener\('(?:visibilitychange|pagehide|pageshow)', \w+\);/g);
+vm.runInContext(registrations.join('\n'), context);
+const dispatch = (target, type, event = {}) => listeners[`${target}:${type}`]?.(event);
+
+context.syncEventVisibility();
+streams[0].receive({ type: 'snapshot', jobs: [existingJob] });
+state.eventBatcher.flushNow();
+assert.deepEqual(renderedJobs, ['existing']);
+dispatch('window', 'pagehide', { persisted: true });
+assert.equal(streams[0].closed, true);
+assert.equal(state.events, null);
+
+// The server now has the Passkey login result; only pageshow fires on return.
+dispatch('window', 'pageshow', { persisted: true });
+assert.equal(streams.length, 2, 'restored dashboard must reconnect without visibilitychange or reload');
+streams[1].receive({ type: 'snapshot', jobs: [existingJob, passkeyJob] });
+state.eventBatcher.flushNow();
+assert.deepEqual(renderedJobs, ['existing', 'from-passkey'], 'fresh snapshot must render the Passkey account');
+assert.equal(state.filter, 'live');
+assert.equal(state.selectedLogoutJobIds.has('existing'), true);
+
+dispatch('window', 'pageshow', { persisted: true });
+dispatch('document', 'visibilitychange');
+assert.equal(streams.length, 2, 'repeated lifecycle events must reuse the open connection');
+context.document.visibilityState = 'hidden';
+dispatch('document', 'visibilitychange');
+dispatch('window', 'pageshow', { persisted: true });
+assert.equal(streams[1].closed, true);
+assert.equal(streams.length, 2, 'hidden dashboard must not open a background stream');
+context.document.visibilityState = 'visible';
+dispatch('document', 'visibilitychange');
+assert.equal(streams.length, 3);
+dispatch('window', 'pagehide');
 
 console.log('event connection lifecycle contract passed');
