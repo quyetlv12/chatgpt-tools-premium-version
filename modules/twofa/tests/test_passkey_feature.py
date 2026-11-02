@@ -273,21 +273,25 @@ class PasskeyApiTests(TestCase):
         self.job=TwoFAJob(id='live',email='demo@example.com',password='synthetic',secret='TEST',status='success',account_state='live',login_verified=True)
         self.manager.jobs['live']=self.job
         self.passwords=SimpleNamespace(jobs={})
-        self.patches=[patch.object(server,'manager',self.manager),patch.object(server,'password_manager',self.passwords),patch.object(server,'passkey_handoffs',PasskeyHandoffs())]
+        self.launcher=Mock(return_value=True)
+        self.patches=[patch.object(server,'manager',self.manager),patch.object(server,'password_manager',self.passwords),patch.object(server,'passkey_handoffs',PasskeyHandoffs()),patch.object(server.passkey_windows,'open',self.launcher)]
         for p in self.patches: p.start()
         self.client=TestClient(server.app); self.headers={'X-Auth-Token':server.auth_token}
     def tearDown(self):
         for p in reversed(self.patches): p.stop()
-    def start(self,headers=None,confirm='ADD_PASSKEY'):
-        return self.client.post('/api/jobs/live/passkey/start',headers=self.headers if headers is None else headers,json={'confirm':confirm})
+    def start(self,headers=None,confirm='ADD_PASSKEY',**options):
+        return self.client.post('/api/jobs/live/passkey/start',headers=self.headers if headers is None else headers,json={'confirm':confirm,**options})
     def test_confirmation_auth_and_password_conflict(self):
-        self.assertEqual(self.start(headers={}).status_code,401)
-        self.assertEqual(self.start(confirm='yes').status_code,422)
+        self.assertEqual(self.start(headers={},native_window=True).status_code,401)
+        self.assertEqual(self.start(confirm='yes',native_window=True).status_code,422)
         self.passwords.jobs['p']=SimpleNamespace(email=self.job.email,status='running')
-        self.assertEqual(self.start().status_code,409)
+        self.assertEqual(self.start(native_window=True).status_code,409)
         self.service.prepare_passkey.assert_not_awaited()
+        self.launcher.assert_not_called()
     def test_one_time_safe_handoff_no_success_claim(self):
         response=self.start(); self.assertEqual(response.status_code,200)
+        self.assertFalse(response.json()['opened'])
+        self.launcher.assert_not_called()
         self.assertEqual(response.headers['cache-control'],'no-store')
         self.assertNotIn('synthetic-state',response.text)
         self.assertNotIn('password',response.text)
@@ -297,3 +301,42 @@ class PasskeyApiTests(TestCase):
         self.assertEqual(response.headers['location'],URL)
         self.assertEqual(response.headers['referrer-policy'],'no-referrer')
         self.assertEqual(self.client.get(link,follow_redirects=False).status_code,410)
+
+    def test_native_row_launch_reuses_bulk_launcher_and_one_use_handoff(self):
+        for host in ('twofa.localhost','127.0.0.1','::1'):
+            with self.subTest(host=host), patch.object(server,'RUNTIME_HOST',host), patch.object(server,'RUNTIME_PORT',5150):
+                self.launcher.reset_mock()
+                response=self.start(native_window=True)
+                self.assertEqual(response.status_code,200)
+                self.assertTrue(response.json()['opened'])
+                path=response.json()['launch_path']
+                authority=f'[{host}]' if host=='::1' else host
+                self.launcher.assert_called_once_with(f'http://{authority}:5150{path}',index=1,total=1)
+                self.assertEqual(response.headers['cache-control'],'no-store')
+                self.assertEqual(response.headers['referrer-policy'],'no-referrer')
+                self.assertNotIn('mfa_token',response.text)
+                self.assertNotIn('synthetic',response.text)
+                redirect=self.client.get(path,follow_redirects=False)
+                self.assertEqual(redirect.status_code,303)
+                self.assertEqual(redirect.headers['location'],URL)
+                self.assertEqual(self.client.get(path,follow_redirects=False).status_code,410)
+
+    def test_native_failure_keeps_one_use_manual_fallback(self):
+        self.launcher.return_value=False
+        response=self.start(native_window=True)
+        self.assertEqual(response.status_code,200)
+        self.assertFalse(response.json()['opened'])
+        self.launcher.assert_called_once()
+        path=response.json()['launch_path']
+        self.assertEqual(self.client.get(path,follow_redirects=False).status_code,303)
+        self.assertEqual(self.client.get(path,follow_redirects=False).status_code,410)
+
+    def test_native_launch_never_runs_for_ineligible_or_failed_preparation(self):
+        for changes in ({'status':'error'},{'account_state':'unknown'},{'login_verified':False}):
+            with self.subTest(changes=changes):
+                self.manager.jobs['live']=replace(self.job,**changes)
+                self.assertEqual(self.start(native_window=True).status_code,409)
+        self.manager.jobs['live']=self.job
+        self.service.prepare_passkey.side_effect=TwoFAFlowError('Không chuẩn bị được passkey')
+        self.assertEqual(self.start(native_window=True).status_code,502)
+        self.launcher.assert_not_called()

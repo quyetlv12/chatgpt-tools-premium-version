@@ -1,0 +1,97 @@
+.aw-workspace { display: grid; gap: 18px; min-width: 0; color: var(--foreground); font-size: var(--text-base); }
+.native-workspace > .aw-workspace { padding: 24px; }
+.aw-heading, .aw-card-heading, .aw-field-heading, .aw-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.aw-heading h2 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: var(--text-title); line-height: 1.25; font-weight: 700; letter-spacing: -.02em; }
+.aw-heading h2 svg { color: var(--primary); width: 23px; height: 23px; }
+.aw-heading p, .aw-help { margin: 5px 0 0; color: var(--muted-foreground); font-size: var(--text-sm); line-height: 1.65; }
+.aw-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; min-width: 0; }
+.aw-workspace .aw-card { padding: 20px; gap: 14px; box-shadow: var(--panel-shadow); border-radius: 12px; min-width: 0; }
+.aw-card form { display: grid; gap: 14px; min-width: 0; }
+.aw-card-heading h3 { margin: 0; font-size: var(--text-card); letter-spacing: 0; font-weight: 600; }
+.aw-field-heading label, .aw-password-settings label, .aw-history-tools label { font-weight: 500; }
+.aw-card-heading > span, .aw-field-heading > span { font-size: var(--text-sm); color: var(--muted-foreground); }
+.aw-workspace textarea, .aw-workspace input, .aw-dialog input { min-width: 0; width: 100%; border: 1px solid var(--input); border-radius: 9px; color: var(--foreground); background: var(--surface-inset); padding: 11px 12px; outline: none; font: inherit; font-weight: 400; }
+.aw-workspace textarea { resize: vertical; line-height: 1.65; min-height: 190px; white-space: pre; overflow-x: auto; }
+.aw-draft textarea, .aw-output textarea { font-family: var(--font-mono); }
+.aw-workspace textarea::placeholder, .aw-workspace input::placeholder, .aw-dialog input::placeholder { color: var(--text-subtle); }
+.aw-workspace textarea:focus-visible, .aw-workspace input:focus-visible, .aw-dialog input:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.aw-draft textarea { margin-top: 11px; }
+.aw-draft + [data-slot=button] { justify-self: start; }
+.aw-buttons, .aw-row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aw-target-row { display: flex; gap: 8px; align-items: center; }
+.aw-target-row input { flex: 1; }
+.aw-notice, .aw-warning { padding: 12px 15px; border: 1px solid var(--input); border-radius: 9px; font-size: var(--text-base); line-height: 1.7; margin: 0; overflow-wrap: anywhere; }
+.aw-warning { background: var(--warning-surface); color: var(--foreground); border-color: var(--warning-stroke); }
+.aw-notice-success { color: var(--foreground); background: var(--success-surface); border-color: var(--success-stroke); }
+.aw-notice-error { color: var(--foreground); background: var(--error-surface); border-color: var(--error-stroke); }
+.aw-connection { color: var(--muted-foreground); font-size: var(--text-sm); line-height: 1.5; }
+.aw-connected, .aw-workspace .aw-ready { color: var(--success); }
+.aw-reconnecting { color: var(--warning); }
+.aw-muted { color: var(--muted-foreground); }
+.aw-queue-heading { align-items: flex-start; }
+.aw-queue-heading > .aw-buttons { justify-content: flex-end; }
+.aw-table-wrap { overflow-x: auto; max-width: 100%; }
+.aw-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--text-base); }
+.aw-table th { font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--muted-foreground); font-weight: 600; padding: 12px 10px; border-bottom: 1px solid var(--input); }
+.aw-table td { padding: 15px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.aw-table tr:last-child td { border-bottom: 0; }
+.aw-table th:first-child, .aw-table td:first-child { padding-left: 0; }
+.aw-table th:last-child, .aw-table td:last-child { padding-right: 0; }
+.aw-table td:first-child { min-width: 200px; }
+.aw-table td:nth-child(3) { min-width: 180px; }
+.aw-table td:last-child { min-width: 120px; }
+.aw-email { display: flex; gap: 3px; align-items: center; max-width: 290px; }
+.aw-email strong { overflow-wrap: anywhere; font-weight: 600; }
+.aw-email button { color: var(--muted-foreground); }
+.aw-table small { display: block; margin-top: 6px; color: var(--muted-foreground); font-size: var(--text-xs); line-height: 1.65; overflow-wrap: anywhere; }
+.aw-table .aw-row-error, .aw-row-error { color: var(--foreground); max-width: 250px; }
+.aw-status { display: inline-block; font-size: var(--text-xs); font-weight: 600; line-height: 1.4; padding: 5px 7px; border: 1px solid var(--input); border-radius: 5px; white-space: nowrap; color: var(--muted-foreground); }
+.aw-status-success { color: var(--success); background: var(--success-surface); border-color: var(--success-stroke); }
+.aw-status-running { color: var(--info); background: var(--primary-soft); border-color: var(--primary-border); }
+.aw-status-error { color: var(--error); background: var(--error-surface); border-color: var(--error-stroke); }
+.aw-status-cancelled { color: var(--warning); border-color: var(--warning-stroke); }
+.aw-phase { font-size: var(--text-xs); font-weight: 600; }
+.aw-row-actions { gap: 5px; }
+.aw-row-actions > small { margin: 0; }
+.aw-empty { color: var(--muted-foreground); margin: 0; padding: 30px 12px; text-align: center; line-height: 1.7; font-size: var(--text-base); }
+.aw-dialog { padding: 22px; width: min(700px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border: 1px solid var(--input); border-radius: 10px; background: var(--card); color: var(--foreground); overflow-y: auto; }
+.aw-dialog::backdrop { background: var(--overlay); }
+.aw-dialog-wide { width: min(930px, calc(100vw - 32px)); }
+.aw-dialog-heading { margin-bottom: 20px; flex-wrap: nowrap; }
+.aw-dialog-heading h2 { margin: 0; font-size: 18px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
+.aw-logs { white-space: pre-wrap; overflow-wrap: anywhere; padding: 15px; border-radius: 9px; background: var(--surface-inset); max-height: 55dvh; overflow-y: auto; font-size: var(--text-base); line-height: 1.8; }
+.aw-history-tools { display: grid; gap: 11px; font-size: var(--text-base); }
+.aw-history-list { display: grid; gap: 12px; margin-top: 20px; }
+.aw-history-entry { display: flex; gap: 12px; align-items: flex-start; background: var(--surface-inset); border: 1px solid var(--border); border-radius: 8px; padding: 15px; min-width: 0; }
+.aw-history-number { color: var(--muted-foreground); font-size: var(--text-sm); padding-top: 3px; }
+.aw-history-body { flex: 1; min-width: 0; }
+.aw-history-body header { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; align-items: center; }
+.aw-history-body strong { font-size: var(--text-base); overflow-wrap: anywhere; }
+.aw-history-body time { color: var(--muted-foreground); font-size: var(--text-xs); }
+.aw-history-body dl { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 13px 0 0; }
+.aw-history-body dt { color: var(--muted-foreground); font-size: var(--text-xs); margin-bottom: 4px; }
+.aw-history-body dd { font-size: var(--text-sm); margin: 0; overflow-wrap: anywhere; user-select: text; }
+@media (max-width: 1000px) { .aw-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 580px) {
+  .native-workspace > .aw-workspace { padding: 16px; }
+  .aw-workspace { gap: 14px; font-size: var(--text-base); }
+  .aw-heading h2 { font-size: var(--text-title); }
+  .aw-workspace .aw-card { padding: 15px; }
+  .aw-heading > .aw-buttons, .aw-queue-heading > .aw-buttons { width: 100%; justify-content: flex-start; }
+  .aw-target-row { flex-wrap: wrap; }
+  .aw-target-row input { flex-basis: 100%; }
+  .aw-workspace [data-slot=button], .aw-dialog [data-slot=button] { min-height: 38px; }
+  .aw-dialog { padding: 16px; }
+  .aw-history-entry { flex-wrap: wrap; padding: 12px; gap: 10px; }
+  .aw-history-body { flex-basis: calc(100% - 35px); }
+  .aw-history-entry > button { margin-left: 26px; }
+  .aw-history-body dl { grid-template-columns: minmax(0, 1fr); }
+}
+
+.aw-logs{font-family:var(--font-mono);font-size:14px;background:var(--console);border:1px solid var(--border);border-radius:9px;line-height:1.7}
+.aw-table td{line-height:1.4}
+.aw-table thead{background:var(--surface-header)}
+.aw-table tbody tr:hover{background:var(--bg-hover)}
+.aw-field-heading label,.aw-password-settings label,.aw-history-tools label{font-size:14px}
+@container workspace (max-width:1000px){.aw-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:580px){.aw-workspace [data-slot=button]{min-height:44px}}

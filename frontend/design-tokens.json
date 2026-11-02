@@ -1,0 +1,87 @@
+{
+  "name": "Premium Dark Navy",
+  "colors": {
+    "background": {
+      "main": "#081426",
+      "sidebar": "#0D1D34",
+      "header": "#0B192D",
+      "card": "#122742",
+      "surface": "#172F4D",
+      "input": "#0D1D34",
+      "hover": "#1D3557",
+      "active": "#1D4ED8",
+      "console": "#07111F"
+    },
+    "accent": {
+      "primary": "#2563EB",
+      "cyan": "#38BDF8",
+      "lightBlue": "#60A5FA",
+      "softBlue": "#1E40AF"
+    },
+    "text": {
+      "primary": "#F1F5F9",
+      "secondary": "#94A3B8",
+      "muted": "#64748B",
+      "disabled": "#475569"
+    },
+    "status": {
+      "success": "#34D399",
+      "running": "#38BDF8",
+      "warning": "#FBBF24",
+      "error": "#FB7185",
+      "dangerButton": "#9F263D",
+      "successButton": "#059669"
+    },
+    "border": "#263B59",
+    "fieldBorder": "#475569"
+  },
+  "typography": {
+    "ui": "Inter",
+    "mono": "JetBrains Mono",
+    "size": {
+      "heading": 30,
+      "headingMobile": 28,
+      "section": 21,
+      "card": 18,
+      "stat": 32,
+      "body": 15,
+      "button": 15,
+      "navigation": 15,
+      "table": 15,
+      "label": 14,
+      "caption": 13,
+      "log": 14
+    },
+    "weights": [
+      400,
+      500,
+      600,
+      700,
+      800
+    ]
+  },
+  "layout": {
+    "navigation": "horizontal-header",
+    "stackedHeaderBreakpoint": 1100,
+    "cardPadding": [
+      16,
+      20
+    ],
+    "sectionGap": [
+      16,
+      24
+    ]
+  },
+  "radius": {
+    "card": 12,
+    "control": 9
+  },
+  "motion": {
+    "durationMs": 180,
+    "respectsReducedMotion": true
+  },
+  "accessibility": {
+    "readableMutedAndPlaceholder": "#94A3B8",
+    "rawMutedUsage": "Decorative only; insufficient normal text contrast on navy cards"
+  }
+}

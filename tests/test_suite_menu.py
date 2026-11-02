@@ -27,7 +27,24 @@ class SuiteMenuTests(unittest.TestCase):
         self.assertNotIn('Đi tới tool', self.source)
         self.assertIn('#selector(openTool(_:))', self.source)
         self.assertIn('sender.representedObject as? URL', self.source)
-        self.assertIn('NSWorkspace.shared.open(url)', self.source)
+        self.assertIn('openInBrave(url)', self.source)
+
+    def test_both_variants_show_in_dock_and_share_the_template_icon(self):
+        import plistlib
+        for name in ("Info.plist", "ReactTest-Info.plist"):
+            info = plistlib.loads((ROOT / "packaging/macos" / name).read_bytes())
+            self.assertFalse(info["LSUIElement"])
+        self.assertIn('app.setActivationPolicy(.regular)', self.source)
+        self.assertIn('applicationShouldHandleReopen', self.source)
+        self.assertIn('icon.isTemplate = true', self.source)
+        script = (ROOT / "build-react-test-macos.sh").read_text()
+        self.assertIn('"$ROOT/packaging/macos/MenuBarTemplate.svg" "$APP/Contents/Resources/MenuBarTemplate.svg"', script)
+
+    def test_dashboard_and_module_shortcuts_use_dedicated_brave_profile(self):
+        self.assertIn('openInBrave(dashboardURL)', self.source)
+        self.assertIn('configuration.createsNewApplicationInstance = true', self.source)
+        self.assertIn('NSWorkspace.shared.openApplication', self.source)
+        self.assertNotIn('NSWorkspace.shared.open(', self.source)
 
     def test_close_action_reuses_suite_endpoint_without_confirmation_or_global_kill(self):
         action = self.source.split('@objc private func closeToolWindows', 1)[1].split('@objc private func quitApp', 1)[0]

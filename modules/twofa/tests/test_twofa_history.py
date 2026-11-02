@@ -16,7 +16,7 @@ for path in (str(ROOT), str(APP_DIR)):
         sys.path.insert(0, path)
 
 from db.engine import DatabaseEngine  # noqa: E402
-from db.repositories import JobRepository  # noqa: E402
+from db.repositories import JobRepository, RepositoryError  # noqa: E402
 from db.schema import CURRENT_VERSION  # noqa: E402
 from jobs import TwoFAJob, TwoFAJobManager  # noqa: E402
 from service import RotationResult  # noqa: E402
@@ -173,6 +173,50 @@ class TwoFAHistoryPersistenceTests(unittest.TestCase):
         self.assertEqual(len(manager.twofa_history()), 1)
         self.assertEqual(len(manager_again.twofa_history()), 1)
         self.assertEqual(manager.twofa_history()[0]["raw"], "existing@example.com|password-existing|SECRET-existing")
+
+    def test_repeated_rotations_preserve_history_and_deduplicate_completion(self) -> None:
+        self._create_job("repeat")
+        for index, secret in enumerate(("FIRST", "SECOND", "THIRD"), start=1):
+            data = dict(job_id="repeat", email="repeat@example.com", password="synthetic",
+                        secret=secret, changed_at=float(index))
+            for _ in range(2):
+                self.repo.complete_twofa_success(
+                    **data, account_check=json.dumps({"mode": "change_2fa", "login_verified": True}),
+                )
+                self.repo.record_twofa_history(**data)
+
+        self.repo.delete("repeat")
+        history = self.repo.list_twofa_history()
+        self.assertEqual({row["secret"] for row in history}, {"FIRST", "SECOND", "THIRD"})
+        self.assertEqual(len(history), 3)
+        self.assertEqual(len({row["job_id"] for row in history}), 3)
+        self.assertTrue(all(len(row["job_id"]) <= 128 for row in history))
+
+    def test_restart_backfills_latest_rotation_without_overwriting_previous(self) -> None:
+        self._create_job("existing", status="success", finished_at=77.0)
+        self.repo.record_twofa_history(job_id="existing", email="existing@example.com",
+            password="older", secret="PREVIOUS", changed_at=33.0)
+
+        TwoFAJobManager(self.repo, _SettingsRepo())
+        TwoFAJobManager(self.repo, _SettingsRepo())
+
+        history = self.repo.list_twofa_history()
+        self.assertEqual(len(history), 2)
+        self.assertEqual({row["secret"] for row in history}, {"PREVIOUS", "SECRET-existing"})
+        self.assertEqual(next(row for row in history if row["secret"] == "PREVIOUS")["changed_at"], 33.0)
+
+    def test_history_failure_rolls_back_job_completion(self) -> None:
+        self._create_job("atomic")
+        with self.engine.get_connection() as conn:
+            conn.execute("""CREATE TRIGGER reject_history BEFORE INSERT ON twofa_history
+                BEGIN SELECT RAISE(ABORT, 'synthetic history failure'); END""")
+        with self.assertRaises(RepositoryError):
+            self.repo.complete_twofa_success(job_id="atomic", email="atomic@example.com",
+                password="synthetic", secret="NEW", account_check="{}", changed_at=2.0)
+        row = self.repo.list_all()[0]
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["secret"], "SECRET-atomic")
+        self.assertEqual(self.repo.list_twofa_history(), [])
 
 
 class _SuccessfulRotationService:

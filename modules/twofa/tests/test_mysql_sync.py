@@ -182,6 +182,19 @@ class MySQLSyncTests(unittest.TestCase):
         self.assertGreater(new[0][3], old[0][3])
         self.assertEqual(json.loads(new[0][4])["secret"], "SECOND")
 
+    def test_repeated_rotation_history_uses_distinct_idempotent_mirror_keys(self):
+        self.sync.prepare()
+        for secret in ("FIRST", "SECOND", "SECOND"):
+            self.repo.record_twofa_history(job_id="one", email="synthetic@example.com",
+                password="synthetic", secret=secret, changed_at=2)
+        self.remote.lose_ack = True
+        self.sync.sync_once()
+        self.sync.sync_once()
+        rows = [value for key, value in self.remote.rows.items() if key[1] == "twofa_history"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({json.loads(row[4])["secret"] for row in rows}, {"FIRST", "SECOND"})
+        self.assertEqual(self.sync.status()["pending"], 0)
+
     def test_background_reconnects_without_blocking_account_writes(self):
         self.remote.fail_write = True
         self.sync.start()

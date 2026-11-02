@@ -3,6 +3,7 @@
 import ctypes as ct
 from functools import lru_cache
 import json
+import os
 import sys
 import threading
 
@@ -12,7 +13,7 @@ class ConfigError(ValueError):
 
 
 SUPPORTED = sys.platform == "darwin"
-_SERVICE = b"com.shoptaikhoan.suite.sub2api"
+_SERVICE = os.environ.get("SHOPTAIKHOAN_KEYCHAIN_SERVICE", "com.shoptaikhoan.suite.sub2api").encode("utf-8")
 _ACCOUNT = b"admin-config"
 _lock = threading.Lock()
 _NOT_FOUND = -25300

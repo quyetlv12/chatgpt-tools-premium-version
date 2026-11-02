@@ -481,7 +481,7 @@ Routes protected by X-Auth-Token:
 | POST /api/jobs/{id}/refresh-usage | refresh_usage(id) | Updated safe snapshot |
 | POST /api/jobs/{id}/delete-chats | delete_all_chats(id) | Reauthenticated bulk chat deletion; requires body confirmation `DELETE_ALL_CHATS` |
 | POST /api/jobs/{id}/logout-sessions | logout_all_sessions(id) | Reauthenticated one-shot session revocation; requires body confirmation `LOGOUT_ALL_SESSIONS` |
-| POST /api/jobs/{id}/passkey/start | prepare_passkey(id) | Reauthenticated official passkey handoff; requires body confirmation `ADD_PASSKEY` |
+| POST /api/jobs/{id}/passkey/start | prepare_passkey(id), PasskeyWindows.open() | Reauthenticated official handoff; requires `confirm: ADD_PASSKEY`; optional `native_window` defaults false; returns one-use `launch_path` and `opened` |
 | POST /api/jobs/{id}/combined/start | CombinedWorkflowManager.start(id) | Start the fixed RAM-only `twofa` then `logout` workflow; requires exactly `START_COMBINED`, rejects client-selected steps, and blocks active same-account password or bulk-passkey work |
 | GET /api/combined | CombinedWorkflowManager.snapshots() | List RAM-only combined workflow snapshots for reload/recovery |
 | GET /api/combined/{operation_id} | CombinedWorkflowManager.snapshot(id) | Read one combined workflow snapshot |
@@ -500,7 +500,8 @@ Routes protected by X-Auth-Token:
 | GET /api/passkey/output | output() | Non-sensitive list of handoffs opened; no credentials or enrollment claim |
 | GET /api/passkey/launch/{launch_token} | PasskeyHandoffs.consume | One-use, expiring redirect to exact `https://auth.openai.com/passkey-enroll` |
 | POST /api/jobs/{id}/stop | stop(id) | Cancelled or current snapshot |
-| DELETE /api/jobs/failed | clear_failed() | Delete count and replacement snapshot |
+| DELETE /api/jobs/failed | clear_failed(failure_type) | Optional query `failure_type=all` (default), `die`, or `http403`; invalid values return 422. Delete matching non-Live error/cancelled jobs; return delete count and replacement snapshot. DIE (`account_state=die` or `error_kind=account_die`) takes precedence over HTTP 403 in current error text. History is preserved. |
+| DELETE /api/jobs/failed/by-type | clear_failed(failure_type) | Same validated filter contract as above; React uses this distinct route so an older worker returns 404 rather than clearing all errors. |
 | DELETE /api/jobs/{id} | delete(id) | ok |
 | POST /api/jobs/stop-all | stop_all() | ok |
 | DELETE /api/jobs | clear_async() | Delete count; SQLite cleanup runs off the FastAPI event loop |
@@ -693,14 +694,17 @@ Primary statuses are queued, running, success, error, and cancelled. Never infer
 | session_mutation_started | Durable marker required before a session-backed rotation; never authorizes mutation replay |
 | login_verified | Current stored secret completed login |
 | account_state | live, die, or unknown |
-| error_kind | technical_error, account_die, invalid_credentials, or none |
+| error_kind | technical_error, account_die, invalid_credentials, verification_required, or none |
 | retry_count | Number of manager retries |
 | usage_refreshing | Separate in-flight Usage operation; job status stays success |
 | usage_enabled | Whether this job may call the weekly Usage endpoint |
 | payment_methods_enabled | Whether this job may call the payment-method endpoint |
 
-retryable is false for account_die and invalid_credentials. Ordinary technical
-failures remain retryable. Imported-session jobs are retryable only when a
+retryable is false for account_die. invalid_credentials and verification_required
+block ordinary retries, but a durable rotated_pending_verify checkpoint permits
+manual verification with the saved new secret. These classifications still block
+automatic retry, including pending verification. Ordinary technical failures
+remain retryable. Imported-session jobs are retryable only when a
 new-secret checkpoint remains pending verification; successful or
 uncheckpointed imported jobs cannot retry the mutation.
 
@@ -761,9 +765,17 @@ logout, job enqueue or account persistence was performed. Ordinary-account
 non-interference and failure boundaries are covered by synthetic tests, not a
 second live account.
 
-Passwordless email-OTP accounts need a mail provider. The Community service passes no mail provider, so that branch cannot complete.
+An upstream email-OTP challenge needs a mail provider. The Community service
+passes no mail provider, so that branch cannot complete and returns
+verification_required without automatically repeating login. A challenge on one
+login attempt does not establish that the account is permanently passwordless.
 
-_login() tries up to three times by default. Fatal credential errors stop early. Password/MFA verification HTTP 403, 429, redirects, and 5xx are treated as upstream/WAF/state failures rather than proof of bad credentials; the next attempt gets a fresh OAuth state through the legacy fallback flow. Final failure is classified as account_die, invalid_credentials, or technical_error; only conservative account failures become non-retryable.
+_login() tries up to three times by default. Fatal credential errors and missing
+email verification support stop early. Password/MFA verification HTTP 403, 429,
+redirects, and 5xx are treated as upstream/WAF/state failures rather than proof
+of bad credentials; the next attempt gets a fresh OAuth state through the legacy
+fallback flow. Final failure is classified as account_die, invalid_credentials,
+verification_required, or technical_error.
 
 ## 14. Check-only flow
 
@@ -839,6 +851,8 @@ After rotate_2fa() returns, service.rotate() immediately invokes the manager che
 - broadcasts only the safe snapshot.
 
 Then a fresh pure-request login uses the new secret. Only after this succeeds does _run clear rotated_pending_verify, set login_verified true, and mark success. JobRepository.complete_twofa_success() updates the job and inserts twofa_history in one SQLite transaction.
+
+Repeated rotations on one queue row preserve each distinct verified replacement secret in history. The first history job_id uses the queue ID; later distinct secrets use an opaque, deterministic idempotency key derived from the queue ID and secret. Completion and startup backfill share this rule so they do not overwrite earlier rows or duplicate the same result. Backfill can recover only the latest verified secret still retained in the queue row.
 
 If a retry or restart sees rotated_pending_verify true, _run calls service.verify() with the checkpointed secret. It must not call rotate() a second time.
 
@@ -991,9 +1005,9 @@ Logout-all-sessions UI and manager:
 1. Shows the action only for a successful Live row.
 2. Warns that every active session, including the current session, is affected; propagation can take up to 30 minutes and other tools using the account may be disconnected.
 3. Requires the exact API confirmation body `LOGOUT_ALL_SESSIONS`.
-4. Reauthenticates, sends one `POST /backend-api/accounts/logout_all` with redirects disabled, and never submits a second request.
+4. Reauthenticates, sends one `POST /backend-api/accounts/logout_all` with redirects disabled, and never submits a second request. The React copy uses explicit empty HTTP/HTTPS proxy values to match its direct-login/MFA route; libcurl must not inherit an environment proxy for this request.
 5. Keeps `sessions_logging_out` in RAM/SSE only, blocks same-account check/2FA/password/chat/delete/clear actions, and clears the flag in `finally`.
-6. Does not log in again after revocation; ambiguous outcomes are reported for manual inspection.
+6. Does not log in again after revocation; ambiguous outcomes are reported for manual inspection. A failed reauthentication reports that logout was not sent; a failed logout request reports that revocation is unconfirmed. Both errors omit upstream diagnostics and credentials.
 
 Passkey UI and manager:
 
@@ -1001,6 +1015,7 @@ Passkey UI and manager:
 2. Requires explicit confirmation, then reauthenticates with up to three bounded attempts and POSTs `/backend-api/accounts/mfa/user/request_mfa_token_in_house` with the fresh session bearer token, the preserved ChatGPT/OpenAI cookie set, and browser-equivalent request headers. The complete preparation has one deadline, capped at 180 seconds; a transient login failure is retried before the handoff request.
 3. Requires a valid `state_token` response and constructs only `https://auth.openai.com/passkey-enroll?origin_app_name=ChatGPT&mfa_token=...`; no arbitrary host, path, fragment, redirect, extra parameter, or control character is accepted.
 4. Stores the redirect in a bounded RAM-only one-use handoff for two minutes; the token is consumed before redirect and returns 410 on reuse/expiry.
+   The React row action sends `native_window=true` and uses the same `PasskeyWindows` instance as bulk Passkey: a fresh temporary Chrome profile with `--new-window`, positioned as a single window. It never automatically opens a dashboard tab. The token-protected response returns `opened=true` only when the native process starts; this does not confirm enrollment. If native launch fails, it returns `opened=false` and the UI offers the validated one-use manual fallback link. Clients omitting `native_window` retain handoff-only behavior. Both response variants use `Cache-Control: no-store` and `Referrer-Policy: no-referrer`; the bulk close-windows action also covers these tracked row windows.
 5. The browser performs WebAuthn. No private key, credential object, passkey name, token, cookie, or upstream body is persisted or emitted in snapshots/SSE/logs.
 6. The UI says enrollment is not confirmed; it never automatically logs in, changes 2FA, logs out, or updates job/history state.
 7. The pending lock ends when preparation returns. The operator must finish or close the official page before starting other work on the same account; the tool cannot observe external WebAuthn completion.
@@ -1071,7 +1086,7 @@ Manual retry:
 
 - the UI sends it only for error or cancelled rows;
 - the backend retry() method currently accepts success, error, or cancelled because all three are in TERMINAL;
-- rejects account_die and invalid_credentials;
+- rejects account_die; invalid_credentials and verification_required are allowed only with a pending new-secret checkpoint, which calls verify() without rotating again;
 - increments retry_count;
 - preserves the current password and secret;
 - preserves rotated_pending_verify, so a checkpointed rotation resumes at verification;
@@ -1081,10 +1096,10 @@ A direct authenticated retry request against a successful change_2fa row can the
 
 Auto-retry:
 
-- runs only for retryable errors;
+- runs only for retryable errors, excluding account_die, invalid_credentials and verification_required even with a pending checkpoint;
 - obeys twofa.auto_retry, max count, and delay;
 - schedules _delayed_retry();
-- retries only if the row is still error when the delay expires.
+- retries only if the row is still error and remains eligible for auto-retry when the delay expires.
 
 Retry all in the UI iterates retryable error/cancelled rows sequentially and calls the per-row API. It is not one atomic backend operation.
 

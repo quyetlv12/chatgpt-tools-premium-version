@@ -153,6 +153,7 @@ class LogoutSessionsRequest(BaseModel):
 
 class PasskeyRequest(BaseModel):
     confirm: Literal["ADD_PASSKEY"]
+    native_window: bool = False
 
 
 class PasskeyLaunchRequest(BaseModel):
@@ -531,8 +532,18 @@ async def start_job_passkey(job_id: str, _request: PasskeyRequest) -> JSONRespon
             raise ValueError("Tài khoản đang thêm passkey hàng loạt; vui lòng chờ")
         url = await manager.prepare_passkey(job_id)
         token = passkey_handoffs.issue(url)
+        launch_path = f"/api/passkey/launch/{token}"
+        opened = False
+        if _request.native_window:
+            host = f"[{RUNTIME_HOST}]" if RUNTIME_HOST == "::1" else RUNTIME_HOST
+            opened = await asyncio.to_thread(
+                passkey_windows.open,
+                f"http://{host}:{RUNTIME_PORT}{launch_path}",
+                index=1,
+                total=1,
+            )
         return JSONResponse(
-            {"launch_path": f"/api/passkey/launch/{token}"},
+            {"launch_path": launch_path, "opened": opened},
             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
     except KeyError as exc:
@@ -798,8 +809,9 @@ async def stop_job(job_id: str) -> dict[str, Any]:
 
 
 @app.delete("/api/jobs/failed", dependencies=[Depends(require_token)])
-async def clear_failed_jobs() -> dict[str, Any]:
-    deleted = manager.clear_failed()
+@app.delete("/api/jobs/failed/by-type", dependencies=[Depends(require_token)])
+async def clear_failed_jobs(failure_type: Literal["all", "die", "http403"] = "all") -> dict[str, Any]:
+    deleted = manager.clear_failed(failure_type)
     return {"deleted": deleted, "jobs": manager.snapshots()}
 
 

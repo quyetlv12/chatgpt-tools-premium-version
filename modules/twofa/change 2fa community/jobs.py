@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -76,9 +77,14 @@ class TwoFAJob:
 
     @property
     def retryable(self) -> bool:
+        if self.error_kind == "account_die":
+            return False
         if self.session_imported and (not self.rotated_pending_verify or self.status == "success"):
             return False
-        return self.error_kind not in {"account_die", "invalid_credentials"}
+        # A stored replacement secret may be verified manually without rotating again.
+        return self.rotated_pending_verify or self.error_kind not in {
+            "invalid_credentials", "verification_required",
+        }
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -162,6 +168,8 @@ class TwoFAJobManager:
 
         if classify_account_check_error(error) == "deactivated":
             return "account_die", "die"
+        if "no mail_provider available" in error.casefold():
+            return "verification_required", "unknown"
         if is_fatal_login_error(error):
             return "invalid_credentials", "unknown"
         return "technical_error", "unknown"
@@ -767,13 +775,15 @@ class TwoFAJobManager:
     def _should_auto_retry(self, job: TwoFAJob) -> bool:
         return (
             job.retryable
+            and job.error_kind not in {"account_die", "invalid_credentials", "verification_required"}
             and bool(self.settings["twofa.auto_retry"])
             and job.retry_count < int(self.settings["twofa.auto_retry_max"])
         )
 
     async def _delayed_retry(self, job_id: str, delay: float) -> None:
         await asyncio.sleep(delay)
-        if job_id in self.jobs and self.jobs[job_id].status == "error":
+        job = self.jobs.get(job_id)
+        if job is not None and job.status == "error" and self._should_auto_retry(job):
             self.retry(job_id)
 
     def retry(self, job_id: str) -> dict[str, Any]:
@@ -1146,13 +1156,24 @@ class TwoFAJobManager:
     def _is_clearable_failure(job: TwoFAJob) -> bool:
         return job.status in {"error", "cancelled"} and job.account_state != "live"
 
-    def clear_failed(self) -> int:
+    @classmethod
+    def _failure_group(cls, job: TwoFAJob) -> str | None:
+        if not cls._is_clearable_failure(job):
+            return None
+        if job.account_state == "die" or job.error_kind == "account_die":
+            return "die"
+        return "http403" if re.search(r"\bHTTP\s+403\b", job.error or "", re.IGNORECASE) else "other"
+
+    def clear_failed(self, failure_type: str = "all") -> int:
         self._assert_event_loop_thread()
+        if failure_type not in {"all", "die", "http403"}:
+            raise ValueError("Nhóm lỗi không hợp lệ")
         removable_ids = [
             job_id
             for job_id in self.order
             if (job := self.jobs.get(job_id)) is not None
             and self._is_clearable_failure(job)
+            and (failure_type == "all" or self._failure_group(job) == failure_type)
         ]
         for job_id in removable_ids:
             self.delete(job_id)

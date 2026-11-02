@@ -702,3 +702,8 @@ td.account span,.account-result small{font-size:.58rem;line-height:1.45}
 @media(prefers-reduced-motion:reduce){
   .password-history-entry,.password-history-copy,.password-history-head .history-close{transition:none}
 }
+
+/* Keep launch actions within the input panel at embedded widths. */
+.composer-foot{flex-wrap:wrap}
+.launch-controls{min-width:0;max-width:100%;flex-wrap:wrap}
+.launch-controls>*{flex-shrink:0}

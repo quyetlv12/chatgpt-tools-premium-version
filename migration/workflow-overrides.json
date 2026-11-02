@@ -1,0 +1,61 @@
+{
+  "purpose": "Reviewed React-only MFA/logout direct routing, safe logout failure boundaries, private activation log, repeated-rotation history, native passkey profiles, pending verification retry classification, typed failed-row cleanup, and combined-workflow regressions. Recovery mechanism reverted; source-baseline is immutable.",
+  "files": {
+    "modules/twofa/mfa_phase.py": {
+      "source_sha256": "9463efbc3dfd23400d3c99312fc2dfc3e53d811daabb9bdb597d3e2603e0aba9",
+      "react_sha256": "fa4788a21f9c98ea245710ea2d0338ccc0019c10b0a48d8a127edadfdf449511"
+    },
+    "modules/twofa/AGENTS.md": {
+      "source_sha256": "fa9bdcd643e2903346e8e022aa14539a8d33db657a24395518d5d1a337facd51",
+      "react_sha256": "cafedb91fc77ddfa21b71ef01de70712c15f99dce810b3c945f01a209237d167"
+    },
+    "modules/twofa/docs/TOOL-FLOW.md": {
+      "source_sha256": "6fc3cca7e1d457205aa2bfeea7e95d0fdda9a68d9ec535d1c4675edb405a7db2",
+      "react_sha256": "f9da75e1f22b21c34c0740ea7d83ae6aa29323c3ba0bf60853a55500b48d2648"
+    },
+    "modules/twofa/db/repositories.py": {
+      "source_sha256": "ad2077de2899e1e77fddcdae56f5a2fd69cb5695b3d51eeca18042d51d63c20a",
+      "react_sha256": "7cec2f0ca7c22bfaa881a00d66982cf845fb777b5470a28ee0a87aee4fb7d50d"
+    },
+    "modules/twofa/tests/test_twofa_history.py": {
+      "source_sha256": "83251a6c9ec29baa958c2846ce666f4a29a6cf21511913b97a534b63ff728b5d",
+      "react_sha256": "e251327c7ef6cb5dd2ef7aefca1de4194f4d76d3056b3b497cb420d753bfdb4a"
+    },
+    "modules/twofa/tests/test_mysql_sync.py": {
+      "source_sha256": "c0566dd3946724d5896bc43ee2683c816d91de8c9d522c79a39c084b6225963f",
+      "react_sha256": "e0a276e3c2d2413c9acd29c4d50d25d2bf049d6947e06f31f289b2f512793385"
+    },
+    "modules/twofa/change 2fa community/server.py": {
+      "source_sha256": "85a16c22bdfcdc7e3d6c98e10b1d6a1d77e236d7db544462b295dd6d25925565",
+      "react_sha256": "cef2ad877c2a3227ecae36354bfffece437c274dcceda7baf648d285a5e52f16"
+    },
+    "modules/twofa/tests/test_passkey_feature.py": {
+      "source_sha256": "3a2892ac10f9cfe6984f1d8a740165ded3aa92d4b350ec691b441c264ca94ec1",
+      "react_sha256": "3bd883e76f8ff866e4934ac67909de7ed94850e0ce1f09225508e6ff57c5bbd7"
+    },
+    "modules/twofa/change 2fa community/service.py": {
+      "source_sha256": "ec5d7ea2fcea528de072cd244d09e82f693e40a4016427143c21617d523fb22e",
+      "react_sha256": "a18e13157393b1d520af7c278556945dd25968ffcf7dcd0b807e866d7e0ad8ae"
+    },
+    "modules/twofa/change 2fa community/jobs.py": {
+      "source_sha256": "5995342f7db4b46cd2b165ee4d7047021a47cf33e658858c975a45f0065eca65",
+      "react_sha256": "afae4dc30692b97d56d31b9734d8c84331cfc88ebd170cd454b4b3b82115b977"
+    },
+    "modules/twofa/session_phase.py": {
+      "source_sha256": "43530cae069cf9529d10a79725125195342974218c451265ef2bda38867615d5",
+      "react_sha256": "a35f24a187e911d55189fb7d27cc69505a73901795acb5fcde18afbc32d32962"
+    },
+    "modules/twofa/tests/test_combined_jobs.py": {
+      "source_sha256": "a189e4dc0a3e45d618f49611844d3ede2587927438eb828964c1ec1fbad274b6",
+      "react_sha256": "f7bcf59aa8ea6f3064c45f81c0b4997e8f9444595d1ec1885bf10eafc725df18"
+    },
+    "modules/twofa/tests/test_filtered_export.py": {
+      "source_sha256": "be7a86404edd8215f6dd3d58baf8cca38c29488f6fe4b3e585da97a697067545",
+      "react_sha256": "db0e8b650fb3207c774eb732379a871a6818cae7fe89c8b1d3afa07d39d3beba"
+    },
+    "modules/twofa/tests/test_filtered_export_api.py": {
+      "source_sha256": "b99233656baf16e304ef31e383f3c0af3b7176e916f690c8bf84b9e2bd4f4177",
+      "react_sha256": "911eeb1eed972ae0d1576c0ab1915689ee4b2cd5f81b6c3a063b7fa91478309f"
+    }
+  }
+}

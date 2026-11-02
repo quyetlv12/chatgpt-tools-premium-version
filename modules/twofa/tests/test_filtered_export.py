@@ -206,6 +206,31 @@ class FilteredExportTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.manager.raw_combo("missing")
 
+    def test_typed_cleanup_preserves_other_groups_live_and_active(self) -> None:
+        rows = [
+            ("die", "error", "die", None, "account deactivated"),
+            ("die-with-403", "cancelled", "unknown", "account_die", "HTTP 403"),
+            ("403", "error", "unknown", "technical_error", "MFA verify failed: HTTP 403 - incorrect_code"),
+            ("other", "error", "unknown", None, "No mail_provider available"),
+            ("false-positive", "error", "unknown", None, "HTTP 4030 id=403"),
+            ("live", "error", "live", None, "HTTP 403"),
+            ("running", "running", "die", None, "HTTP 403"),
+        ]
+        for failure_type, expected in [("die", ["die", "die-with-403"]), ("http403", ["403"])]:
+            with self.subTest(failure_type=failure_type):
+                jobs = [TwoFAJob(id=id, email=f"{id}@example.test", password="synthetic", secret="TEST", status=status, account_state=state, error_kind=kind, error=error) for id,status,state,kind,error in rows]
+                self.manager.jobs = {job.id: job for job in jobs}
+                self.manager.order = [job.id for job in jobs]
+                self.job_repo.deleted.clear()
+                self.assertEqual(self.manager.clear_failed(failure_type), len(expected))
+                self.assertEqual(self.job_repo.deleted, expected)
+                self.assertEqual(set(self.manager.order), {job.id for job in jobs} - set(expected))
+
+    def test_invalid_cleanup_filter_never_deletes(self) -> None:
+        with self.assertRaises(ValueError):
+            self.manager.clear_failed("typo")
+        self.assertEqual(self.job_repo.deleted, [])
+
     def test_clears_failed_accounts_but_keeps_live_and_active_jobs(self) -> None:
         live_error = TwoFAJob(
             id="live-error",

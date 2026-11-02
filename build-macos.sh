@@ -50,7 +50,7 @@ for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 i
 done
 iconutil -c icns "$ICON_WORK/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/packaging/macos/MenuBarTemplate.svg" "$APP/Contents/Resources/MenuBarTemplate.svg"
-xcrun swiftc -O -target arm64-apple-macos13.5 \
+xcrun swiftc -parse-as-library -O -target arm64-apple-macos13.5 \
   "$ROOT/packaging/macos/ShoptaikhoanSuite.swift" -o "$APP/Contents/MacOS/ShoptaikhoanSuite"
 
 echo "[4/5] Signing"

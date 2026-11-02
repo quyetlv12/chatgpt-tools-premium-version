@@ -2470,7 +2470,10 @@ async def logout_all_sessions(
     }
     if cookies:
         headers["Cookie"] = _cookies_to_header(cookies)
-    async with AsyncSession(impersonate=CURL_IMPERSONATE_PRIMARY) as session:
+    # Match direct login/MFA routing instead of inheriting libcurl environment proxies.
+    async with AsyncSession(
+        impersonate=CURL_IMPERSONATE_PRIMARY, proxies={"http": "", "https": ""},
+    ) as session:
         try:
             response = await session.post(
                 f"https://chatgpt.com{target}", headers=headers,

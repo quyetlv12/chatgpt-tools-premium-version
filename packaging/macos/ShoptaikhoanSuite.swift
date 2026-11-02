@@ -1,23 +1,38 @@
 import AppKit
 import Foundation
 
+enum SuiteBrowser {
+    static func profileURL(applicationSupport: URL, supportName: String) -> URL {
+        applicationSupport.appendingPathComponent(supportName, isDirectory: true)
+            .appendingPathComponent("Brave Profile", isDirectory: true)
+    }
+
+    static func arguments(profile: URL, url: URL) -> [String] {
+        ["--user-data-dir=\(profile.path)", "--no-first-run", "--no-default-browser-check", "--new-window", url.absoluteString]
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let dashboardURL = URL(string: "http://127.0.0.1:5050/")!
+    private let port = Bundle.main.object(forInfoDictionaryKey: "SuiteHubPort") as? Int ?? 5050
+    private let supportName = Bundle.main.object(forInfoDictionaryKey: "SuiteSupportName") as? String ?? "Shoptaikhoan Suite"
+    private let isReact = Bundle.main.object(forInfoDictionaryKey: "SuiteReactMode") as? Bool ?? false
+    private var dashboardURL: URL { URL(string: "http://127.0.0.1:\(port)/")! }
     private var hubProcess: Process?
     private var ownsHub = false
     private var statusItem: NSStatusItem?
+    private var dashboardReady = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let iconURL = Bundle.main.url(forResource: "MenuBarTemplate", withExtension: "svg"),
            let icon = NSImage(contentsOf: iconURL) {
             icon.isTemplate = true
-            icon.size = NSSize(width: 19, height: 19)
+            icon.size = NSSize(width: 18, height: 18)
             item.button?.image = icon
         } else {
             item.button?.title = "ST"
         }
-        item.button?.toolTip = "Shoptaikhoan Suite"
+        item.button?.toolTip = supportName
         let menu = NSMenu()
         let open = NSMenuItem(title: "Mở giao diện", action: #selector(openDashboard), keyEquivalent: "o")
         open.target = self
@@ -31,7 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ] {
             let tool = NSMenuItem(title: title, action: #selector(openTool(_:)), keyEquivalent: "")
             tool.target = self
-            tool.representedObject = URL(string: address)!
+            if isReact {
+                let key = address.contains("twofa.") ? "twofa" : address.contains("export.") ? "export" : address.contains("browser.") ? "browser" : "chat-backup"
+                tool.representedObject = URL(string: "\(dashboardURL.absoluteString)#/workspace/\(key)")!
+            } else {
+                tool.representedObject = URL(string: address)!
+            }
             menu.addItem(tool)
         }
         menu.addItem(.separator())
@@ -41,12 +61,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The close action disables itself while its asynchronous request runs.
         menu.autoenablesItems = false
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Thoát Shoptaikhoan Suite", action: #selector(quitApp), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Thoát \(supportName)", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         item.menu = menu
         statusItem = item
         ensureHub()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if dashboardReady { openDashboard() }
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -57,7 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let semaphore = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: request) { _, _, _ in semaphore.signal() }.resume()
         _ = semaphore.wait(timeout: .now() + 2)
-        for _ in 0..<30 where process.isRunning { Thread.sleep(forTimeInterval: 0.1) }
+        let shutdownWait = isReact ? 250 : 30
+        for _ in 0..<shutdownWait where process.isRunning { Thread.sleep(forTimeInterval: 0.1) }
         if process.isRunning { process.terminate() }
         process.waitUntilExit()
     }
@@ -66,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         checkHealth { [weak self] ready in
             guard let self else { return }
             DispatchQueue.main.async {
-                if ready { self.openDashboard(); return }
+                if ready { self.dashboardReady = true; self.openDashboard(); return }
                 do { try self.startHub(); self.waitForHub(attempt: 0) }
                 catch { self.showError(error.localizedDescription) }
             }
@@ -80,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let engines = resources.appendingPathComponent("engines", isDirectory: true)
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("Shoptaikhoan Suite", isDirectory: true)
+            .appendingPathComponent(supportName, isDirectory: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let logURL = support.appendingPathComponent("suite.log")
         if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
@@ -100,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let process = Process()
         process.executableURL = hub
         process.arguments = ["--no-browser"]
+        if isReact { process.arguments! += ["--port", String(port), "--data-dir", env["SHOPTAIKHOAN_SUITE_DATA_DIR"]!] }
         process.currentDirectoryURL = resources
         process.environment = env
         process.standardOutput = log
@@ -110,11 +137,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func waitForHub(attempt: Int) {
-        guard attempt < 80 else { showError("Suite không khởi động sau 20 giây. Xem log tại ~/Library/Application Support/Shoptaikhoan Suite/suite.log"); return }
+        if let process = hubProcess, !process.isRunning {
+            showError("Backend đã dừng. Kiểm tra cổng \(port) và log tại ~/Library/Application Support/\(supportName)/suite.log")
+            return
+        }
+        guard attempt < 160 else { showError("App không khởi động sau 40 giây. Xem log tại ~/Library/Application Support/\(supportName)/suite.log"); return }
         checkHealth { [weak self] ready in
             guard let self else { return }
             DispatchQueue.main.async {
-                if ready { self.openDashboard() }
+                if ready { self.dashboardReady = true; self.openDashboard() }
                 else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.waitForHub(attempt: attempt + 1) } }
             }
         }
@@ -123,8 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func checkHealth(completion: @escaping (Bool) -> Void) {
         var request = URLRequest(url: dashboardURL.appendingPathComponent("api/status"))
         request.timeoutInterval = 1
+        let expectedVariant = isReact ? Bundle.main.bundleIdentifier : nil
         URLSession.shared.dataTask(with: request) { data, response, _ in
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  expectedVariant == nil || http.value(forHTTPHeaderField: "X-Shoptaikhoan-Variant") == expectedVariant,
                   let data,
                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let modules = payload["modules"] as? [[String: Any]],
@@ -138,10 +171,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert(); alert.messageText = title; alert.informativeText = message; alert.alertStyle = .critical; alert.runModal()
     }
 
-    @objc private func openDashboard() { NSWorkspace.shared.open(dashboardURL) }
+    private func openInBrave(_ url: URL) {
+        guard let brave = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.brave.Browser") else {
+            showError("Hãy cài Brave Browser rồi chọn Mở giao diện để thử lại. Profile riêng của tool được lưu độc lập với Brave cá nhân.", title: "Không tìm thấy Brave Browser")
+            return
+        }
+        do {
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let profile = SuiteBrowser.profileURL(applicationSupport: support, supportName: supportName)
+            try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let configuration = NSWorkspace.OpenConfiguration()
+            // A separate instance is required when personal Brave is already running.
+            configuration.createsNewApplicationInstance = true
+            configuration.arguments = SuiteBrowser.arguments(profile: profile, url: url)
+            NSWorkspace.shared.openApplication(at: brave, configuration: configuration) { [weak self] _, error in
+                if let error {
+                    DispatchQueue.main.async { self?.showError(error.localizedDescription, title: "Không thể mở Brave Browser") }
+                }
+            }
+        } catch { showError(error.localizedDescription, title: "Không thể tạo profile Brave riêng") }
+    }
+
+    @objc private func openDashboard() { openInBrave(dashboardURL) }
     @objc private func openTool(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(url)
+        openInBrave(url)
     }
 
     @objc private func closeToolWindows(_ sender: NSMenuItem) {
@@ -171,8 +225,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+#if !LAUNCHER_TEST
+@main
+struct SuiteLauncher {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
+#endif

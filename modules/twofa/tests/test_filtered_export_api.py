@@ -57,7 +57,8 @@ class _ExportManager:
             "raw": "demo@example.com|password|NEWSECRET",
         }]
 
-    def clear_failed(self) -> int:
+    def clear_failed(self, failure_type="all") -> int:
+        self.failure_type = failure_type
         return 2
 
     def snapshots(self) -> list[dict]:
@@ -280,6 +281,24 @@ class FilteredExportApiTests(unittest.TestCase):
                 ],
             },
         )
+
+    def test_typed_cleanup_validates_and_forwards_filter(self) -> None:
+        for value in ("die", "http403", "all"):
+            response = self.client.delete(
+                f"/api/jobs/failed/by-type?failure_type={value}",
+                headers={"X-Auth-Token": server.auth_token},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(server.manager.failure_type, value)
+        response = self.client.delete(
+            "/api/jobs/failed/by-type?failure_type=typo",
+            headers={"X-Auth-Token": server.auth_token},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(server.manager.failure_type, "all")
+
+    def test_typed_cleanup_requires_auth(self) -> None:
+        self.assertEqual(self.client.delete("/api/jobs/failed/by-type?failure_type=die").status_code, 401)
 
     def test_row_2fa_change_requires_local_auth_token(self) -> None:
         response = self.client.post("/api/jobs/demo-job/change-2fa")

@@ -67,6 +67,8 @@ _oauth_pending = {}  # state -> {code_verifier, created_at}
 # - 9router JSON:   ~/.9router/data/db.json
 # - n9router JSON:  ~/.n9router/db.json
 def find_sqlite():
+    if data_dir := os.environ.get("NINE_ROUTER_DATA_DIR"):
+        return os.path.join(data_dir, "db", "data.sqlite")
     candidates = [
         os.path.join(os.path.expanduser("~"), ".9router", "db", "data.sqlite"),
         os.path.join(os.environ.get("APPDATA", ""), "9router", "db", "data.sqlite"),
@@ -127,6 +129,8 @@ def resolve_web_login_reload(payload):
 
 
 def get_json_candidates():
+    if data_dir := os.environ.get("NINE_ROUTER_DATA_DIR"):
+        return [os.path.join(data_dir, "db.json"), os.path.join(data_dir, "data", "db.json")]
     return unique_paths([
         # 9router v0.5+ root-level db.json (PRIMARY — used by current 9router)
         os.path.join(os.environ.get("APPDATA", ""), "9router", "db.json"),
@@ -693,8 +697,8 @@ class OAuthCallbackHandler(SimpleHTTPRequestHandler):
 
     def _send_html(self, body):
         html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>9router OAuth</title>'
-        html += '<style>body{font-family:system-ui;background:#1a1a2e;color:#e0e0e0;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}'
-        html += '.card{background:#16213e;padding:40px;border-radius:16px;text-align:center;max-width:500px;box-shadow:0 8px 32px rgba(0,0,0,.3)}</style>'
+        html += '<style>body{font-family:system-ui;background:#0b2136;color:#f4fbff;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}'
+        html += '.card{background:#16425f;padding:40px;border-radius:16px;text-align:center;max-width:500px;box-shadow:0 8px 32px rgba(0,0,0,.3)}</style>'
         html += '</head><body><div class="card">{}</div></body></html>'.format(body)
         content = html.encode("utf-8")
         self.send_response(200)

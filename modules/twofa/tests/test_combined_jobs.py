@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,8 @@ for path in (str(ROOT), str(APP_DIR)):
         sys.path.insert(0, path)
 
 from combined_jobs import CombinedWorkflowManager  # noqa: E402
+from jobs import TwoFAJob, TwoFAJobManager  # noqa: E402
+from service import TwoFAService  # noqa: E402
 import server  # noqa: E402
 
 
@@ -75,6 +78,119 @@ async def _wait_for(predicate, timeout: float = 1.0) -> None:
 
 
 class CombinedWorkflowTests(IsolatedAsyncioTestCase):
+    async def test_bulk_live_rows_rotate_once_before_logout_with_real_workers(self) -> None:
+        events: dict[str, list[str]] = {}
+        persisted: dict[str, dict] = {}
+        active = peak = 0
+        check_calls = 0
+
+        def update_status(job_id, status, **kwargs):
+            state = json.loads(kwargs["account_check"])
+            persisted[job_id] = {"status": status, **kwargs, **state}
+            if state["rotated_pending_verify"]:
+                self.assertFalse(state["login_verified"])
+                events[job_id].append("checkpoint")
+
+        def complete_success(**kwargs):
+            job_id = kwargs["job_id"]
+            state = json.loads(kwargs["account_check"])
+            self.assertTrue(state["login_verified"])
+            self.assertFalse(state["rotated_pending_verify"])
+            self.assertEqual(events[job_id][-1], "verify")
+            persisted[job_id] = {"status": "success", **kwargs, **state}
+            events[job_id].append("complete")
+
+        async def login(**kwargs):
+            email = kwargs["email"]
+            if kwargs["secret"] == "SYNTHETIC_OLD":
+                events[email].append("login")
+            else:
+                self.assertEqual(kwargs["secret"], f"SYNTHETIC_NEW_{email}")
+                self.assertEqual(persisted[email]["secret"], kwargs["secret"])
+                if "verify" not in events[email]:
+                    self.assertTrue(persisted[email]["rotated_pending_verify"])
+                    self.assertEqual(events[email][-1], "checkpoint")
+                    events[email].append("verify")
+                else:
+                    self.assertEqual(persisted[email]["status"], "success")
+                    events[email].append("logout_login")
+            return {"accessToken": email}
+
+        async def rotate(**kwargs):
+            nonlocal active, peak
+            email = kwargs["access_token"]
+            events[email].append("rotate")
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.001)
+            active -= 1
+            return {"activated": True, "secret": f"SYNTHETIC_NEW_{email}"}
+
+        async def entitlement(**_kwargs):
+            return {"plan": "free"}
+
+        async def logout(**kwargs):
+            email = kwargs["access_token"]
+            self.assertEqual(events[email][-2:], ["complete", "logout_login"])
+            events[email].append("logout")
+
+        service = TwoFAService(
+            login_fn=login, rotate_fn=rotate, entitlement_fn=entitlement,
+            logout_sessions_fn=logout, login_attempts=1,
+        )
+        original_check = service.check
+
+        async def record_check(**kwargs):
+            nonlocal check_calls
+            check_calls += 1
+            return await original_check(**kwargs)
+
+        service.check = record_check
+        repo = SimpleNamespace(
+            list_all=lambda: [], append_log=lambda *_args: None,
+            update_status=update_status, complete_twofa_success=complete_success,
+        )
+        settings = SimpleNamespace(list=lambda *_args: {
+            "twofa.max_concurrent": 3, "twofa.change_enabled": False,
+            "twofa.read_usage": False, "twofa.read_payment_methods": False,
+        })
+        manager = TwoFAJobManager(repo, settings, service=service)
+        for index in range(60):
+            email = f"synthetic-{index}@example.test"
+            events[email] = []
+            job = TwoFAJob(
+                id=email, email=email, password="synthetic", secret="SYNTHETIC_OLD",
+                mode="check_only", status="success", account_state="live",
+                login_verified=True,
+            )
+            manager.jobs[job.id] = job
+            manager.order.append(job.id)
+        manager.start()
+        workflows = CombinedWorkflowManager(manager, wait_interval=0.02)
+        try:
+            await asyncio.gather(*(workflows.start(job_id) for job_id in manager.order))
+            await _wait_for(
+                lambda: all(op.status in {"success", "error", "cancelled"}
+                            for op in workflows.jobs.values()),
+                timeout=5.0,
+            )
+            self.assertEqual(len(workflows.jobs), 60)
+            self.assertTrue(all(op.status == "success" for op in workflows.jobs.values()))
+            self.assertEqual(check_calls, 0)
+            self.assertEqual(peak, 3)
+            self.assertFalse(manager.settings["twofa.change_enabled"])
+            self.assertEqual({job.mode for job in manager.jobs.values()}, {"change_2fa"})
+            self.assertEqual(len(manager.output()), 60)
+            for email, account_events in events.items():
+                with self.subTest(email=email):
+                    self.assertEqual(account_events, [
+                        "login", "rotate", "checkpoint", "verify", "complete",
+                        "logout_login", "logout",
+                    ])
+        finally:
+            await workflows.shutdown()
+            await manager.shutdown()
+
     async def test_start_runs_fixed_twofa_then_logout_without_confirmation(self) -> None:
         source = _Manager()
         workflows = CombinedWorkflowManager(source, wait_interval=0.001)

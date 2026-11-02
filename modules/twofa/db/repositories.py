@@ -6,6 +6,7 @@ Business logic modules inject repository qua constructor, không dùng raw SQL t
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -1801,6 +1802,23 @@ class JobRepository:
         except Exception as exc:
             raise RepositoryError("update_status", exc) from exc
 
+    @staticmethod
+    def _insert_twofa_history(conn, *, job_id, email, password, secret, changed_at):
+        existing = conn.execute(
+            "SELECT secret FROM twofa_history WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        history_key = job_id
+        if existing is not None and existing[0] != secret:
+            # A queue row can rotate again; deduplicate completion/backfill by seed.
+            digest = hashlib.sha256(f"{job_id}\0{secret}".encode()).hexdigest()
+            history_key = f"twofa:{digest}"
+        conn.execute(
+            """INSERT OR IGNORE INTO twofa_history
+                   (job_id, email, password, secret, changed_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (history_key, email, password, secret, changed_at),
+        )
+
     def complete_twofa_success(
         self,
         *,
@@ -1826,11 +1844,9 @@ class JobRepository:
                         "complete_twofa_success",
                         ValueError(f"job not found in DB: {job_id}"),
                     )
-                conn.execute(
-                    """INSERT OR IGNORE INTO twofa_history
-                           (job_id, email, password, secret, changed_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (job_id, email, password, secret, changed_at),
+                self._insert_twofa_history(
+                    conn, job_id=job_id, email=email, password=password,
+                    secret=secret, changed_at=changed_at,
                 )
         except RepositoryError:
             raise
@@ -1849,11 +1865,9 @@ class JobRepository:
         """Idempotently backfill one previously verified 2FA rotation."""
         try:
             with self._engine.get_connection() as conn:
-                conn.execute(
-                    """INSERT OR IGNORE INTO twofa_history
-                           (job_id, email, password, secret, changed_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (job_id, email, password, secret, changed_at),
+                self._insert_twofa_history(
+                    conn, job_id=job_id, email=email, password=password,
+                    secret=secret, changed_at=changed_at,
                 )
         except Exception as exc:
             raise RepositoryError("record_twofa_history", exc) from exc

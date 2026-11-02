@@ -520,7 +520,7 @@ async def _activate_enrollment(
         "session_id": session_id,
         "code": code,
     }
-    log(f"[mfa] POST activate_enrollment factor_id={factor_id[:20]} code={code}")
+    log("[mfa] POST activate_enrollment")
     r = await _post_with_retry(
         session, url=url, headers=headers, body=body, log=log, label="activate",
     )
@@ -607,7 +607,7 @@ async def rotate_2fa(
         WINDOWS_USER_AGENT,
     )
 
-    proxies = {"http": proxy, "https": proxy} if proxy else None
+    proxies = {"http": proxy or "", "https": proxy or ""}
     base_headers = {
         "User-Agent": WINDOWS_USER_AGENT,
         "Accept": "*/*",
@@ -743,7 +743,7 @@ async def enable_2fa(
     if impersonate is None:
         impersonate = CURL_IMPERSONATE_PRIMARY
 
-    proxies = {"http": proxy, "https": proxy} if proxy else None
+    proxies = {"http": proxy or "", "https": proxy or ""}
     base_headers = {
         "User-Agent": user_agent,
         "Accept": "*/*",

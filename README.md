@@ -1,4 +1,27 @@
-# Shoptaikhoan Suite
+# Shoptaikhoan Suite — React
+
+Nhánh `react` chứa giao diện React và các engine độc lập. Nhánh `main` giữ bản Suite gốc.
+
+## Chạy bản React
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cd frontend
+bun install --frozen-lockfile
+bun run build
+cd ..
+.venv/bin/python run-react.py
+```
+
+Mở `http://127.0.0.1:5150`. Vite cần Node trên PATH; chế độ phát triển dùng
+`bun run dev` trong `frontend` tại cổng `5151` khi backend đang chạy.
+
+Build ứng dụng React riêng trên macOS: `./build-react-test-macos.sh`.
+Mã nguồn không chứa tài khoản, session, runtime, dependencies hoặc file build.
+Xem [hướng dẫn React](migration/README.md) để biết cách kiểm tra và giới hạn hiện tại.
+
+## Suite gốc
 
 Một launcher và giao diện trung tâm cho bốn module độc lập: 2FA/Password, Codex Export, Browser Login/9Router và Chat Backup.
 

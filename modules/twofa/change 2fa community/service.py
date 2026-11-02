@@ -154,10 +154,18 @@ class TwoFAService:
             error_kind = (
                 "account_die"
                 if account_state == "die"
+                else "verification_required"
+                if "no mail_provider available" in detail.casefold()
                 else "invalid_credentials"
                 if last_error is not None and is_fatal_login_error(last_error)
                 else "technical_error"
             )
+        if error_kind == "verification_required":
+            raise TwoFAFlowError(
+                "Đăng nhập cần mã xác minh email; Community chưa có dịch vụ nhận mã email.",
+                error_kind=error_kind,
+                account_state=account_state,
+            ) from last_error
         label = "Tài khoản die" if account_state == "die" else "Đăng nhập thất bại"
         raise TwoFAFlowError(
             f"{label}: {detail[:220]}",
@@ -468,6 +476,13 @@ class TwoFAService:
                 email=email, password=password, secret=secret, timeout=timeout,
                 log=lambda _message: None,
             )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise TwoFAFlowError(
+                "Chưa gửi logout: đăng nhập lại bằng mật khẩu và 2FA hiện tại thất bại."
+            ) from exc
+        try:
             await asyncio.wait_for(
                 (self._logout_sessions_fn or logout_all_sessions)(
                     access_token=session["accessToken"], cookies=session.get("__cookies"),

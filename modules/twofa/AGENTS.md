@@ -40,6 +40,7 @@ One deliberate shared side effect exists: SettingsRepository writes active Commu
 - Successful rotation requires activation, durable secret checkpoint, and a fresh login with the stored new secret.
 - rotated_pending_verify always resumes with verify(); it must never rotate again.
 - Verified job completion and twofa_history insertion stay atomic.
+- Repeated rotations preserve distinct verified secrets in history. Later history job_id values may be opaque idempotency keys rather than queue IDs; completion and startup backfill must deduplicate the same result.
 - Queue deletion never deletes verified 2FA history.
 - Password change remains a distinct job_type, API namespace, queue, SSE stream, output, and history.
 - A password success requires fresh login with pending_password; completion promotes it atomically and inserts password_history.

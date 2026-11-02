@@ -13,41 +13,41 @@
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     /* ==========================================================================
-       Slate Pro Theme — High-Contrast, Clean & Readable
+       Navy Cyan Theme — High-Contrast, Clean & Readable
        Clear Hierarchy · High Readability · Elevated Surfaces · Bright Accents
        ========================================================================== */
 
     :root {
-      /* Backgrounds — Elevated Slate Scale (brighter, clearly layered) */
-      --bg:             #161922;
-      --surface:        #1E2230;
-      --surface2:       #262B3D;
-      --surface3:       #2F364C;
-      --surface-hover:  #2D3349;
-      --input-bg:       #191C27;
+      /* Backgrounds — Navy Scale (brighter, clearly layered) */
+      --bg:             #0b2136;
+      --surface:        #16425f;
+      --surface2:       #1b4c69;
+      --surface3:       #235c7a;
+      --surface-hover:  #215673;
+      --input-bg:       #082137;
 
       /* Borders — Visible, Crisp */
       --border:         rgba(255, 255, 255, 0.10);
       --border-subtle:  rgba(255, 255, 255, 0.06);
       --border-strong:  rgba(255, 255, 255, 0.18);
-      --border-focus:   #6366F1;
+      --border-focus:   #55e7fa;
 
       /* Typography — High-Contrast, Easy to Read */
-      --text:           #EDF1F7;
+      --text:           #f4fbff;
       --text-strong:    #FFFFFF;
-      --muted:          #9AA3B8;
-      --muted-light:    #CBD3E1;
-      --faint:          #6B758E;
+      --muted:          #b6d1df;
+      --muted-light:    #d6eaf5;
+      --faint:          #8aafc2;
 
-      /* Accents — Vibrant Blue-Indigo */
-      --accent:         #6366F1;
-      --accent-hover:   #4F46E5;
-      --accent-active:  #4338CA;
-      --accent-glow:    rgba(99, 102, 241, 0.25);
-      --accent-ring:    rgba(99, 102, 241, 0.35);
-      --accent-dim:     rgba(99, 102, 241, 0.15);
-      --accent-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%);
-      --accent-gradient-hover: linear-gradient(135deg, #7175F3 0%, #5B53EE 100%);
+      /* Accents — Blue and Cyan */
+      --accent:         #55e7fa;
+      --accent-hover:   #42d6ed;
+      --accent-active:  #28bdd8;
+      --accent-glow:    rgba(85, 231, 250, 0.25);
+      --accent-ring:    rgba(85, 231, 250, 0.35);
+      --accent-dim:     rgba(85, 231, 250, 0.15);
+      --accent-gradient: linear-gradient(110deg, #3198ff 0%, #52e4f4 100%);
+      --accent-gradient-hover: linear-gradient(135deg, #62c0ff 0%, #8cf2fc 100%);
 
       /* Status Colors — Bright & Clear */
       --green:          #34D399;
@@ -62,8 +62,8 @@
       --red-bg:         rgba(248, 113, 113, 0.15);
       --red-border:     rgba(248, 113, 113, 0.35);
 
-      --cyan:           #22D3EE;
-      --cyan-bg:        rgba(34, 211, 238, 0.15);
+      --cyan:           #55e7fa;
+      --cyan-bg:        rgba(85, 231, 250, 0.15);
 
       /* Typography */
       --sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -111,13 +111,13 @@
     }
 
     a {
-      color: #818CF8;
+      color: #55e7fa;
       text-decoration: none;
       transition: color 0.15s ease;
     }
 
     a:hover {
-      color: #A5B4FC;
+      color: #9ee6ff;
       text-decoration: underline;
     }
 
@@ -125,7 +125,7 @@
       font-family: var(--mono);
       font-size: 0.9em;
       background: var(--surface2);
-      color: #A5B4FC;
+      color: #9ee6ff;
       padding: 2px 6px;
       border-radius: var(--r-xs);
       border: 1px solid var(--border);
@@ -163,7 +163,7 @@
       height: 100vh;
       padding: 20px 14px 18px;
       border-right: 1px solid var(--border);
-      background: #191D28;
+      background: #0d2941;
       display: flex;
       flex-direction: column;
       gap: 18px;
@@ -202,9 +202,9 @@
       align-items: center;
       padding: 2px 6px;
       border-radius: 4px;
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(168, 85, 247, 0.35));
-      border: 1px solid rgba(99, 102, 241, 0.5);
-      color: #C7D2FE;
+      background: linear-gradient(135deg, rgba(85, 231, 250, 0.35), rgba(49, 152, 255, 0.35));
+      border: 1px solid rgba(85, 231, 250, 0.5);
+      color: #d6f7ff;
       font-size: 9.5px;
       font-weight: 700;
       letter-spacing: 0.8px;
@@ -259,8 +259,8 @@
 
     .tab-btn.active {
       color: var(--text-strong);
-      background: rgba(99, 102, 241, 0.18);
-      border-color: rgba(99, 102, 241, 0.35);
+      background: rgba(85, 231, 250, 0.18);
+      border-color: rgba(85, 231, 250, 0.35);
       font-weight: 600;
     }
 
@@ -288,7 +288,7 @@
       display: block;
       font-size: 12px;
       font-weight: 600;
-      color: #A5B4FC;
+      color: #9ee6ff;
       margin-bottom: 3px;
     }
 
@@ -316,7 +316,7 @@
       gap: 16px;
       padding: 0 24px;
       border-bottom: 1px solid var(--border);
-      background: #1A1E2B;
+      background: #123750;
       position: sticky;
       top: 0;
       z-index: 9;
@@ -401,7 +401,7 @@
       place-items: center;
       border-radius: 50%;
       background: var(--accent-gradient);
-      color: white;
+      color: #052033;
       font-weight: 700;
       font-size: 12.5px;
       box-shadow: 0 2px 8px var(--accent-glow);
@@ -450,7 +450,7 @@
       display: grid;
       place-items: center;
       border-radius: var(--r-sm);
-      color: #C7D2FE;
+      color: #d6f7ff;
       background: var(--accent-dim);
       border: 1px solid var(--accent-ring);
       font-size: 17px;
@@ -665,7 +665,7 @@
       font-family: var(--mono);
       font-size: 12.5px;
       font-weight: 700;
-      color: #A5B4FC;
+      color: #9ee6ff;
     }
 
     .progress-track {
@@ -751,7 +751,7 @@
 
     .btn-primary {
       background: var(--accent-gradient);
-      color: #FFFFFF;
+      color: #052033;
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.2);
     }
 
@@ -1120,7 +1120,7 @@
 
     .oauth-tab.active {
       color: var(--text-strong);
-      background: rgba(99, 102, 241, 0.18);
+      background: rgba(85, 231, 250, 0.18);
       box-shadow: inset 0 -2px 0 var(--accent);
     }
 
@@ -1139,7 +1139,7 @@
     }
     .oauth-prereq code {
       font-size: 10.5px;
-      background: rgba(99,102,241,0.12);
+      background: rgba(85,231,250,0.12);
       padding: 1px 5px;
       border-radius: 3px;
     }
@@ -1255,8 +1255,8 @@
 
     /* Panel override — no panel-head, terminal chrome handles header */
     .terminal-panel {
-      background: #0C0E16;
-      border: 1px solid rgba(99, 102, 241, 0.22);
+      background: #082137;
+      border: 1px solid rgba(85, 231, 250, 0.22);
       border-radius: var(--r-sm);
       overflow: hidden;
       box-shadow: 0 4px 24px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.04);
@@ -1268,7 +1268,7 @@
       align-items: center;
       gap: 10px;
       padding: 8px 14px;
-      background: #13151F;
+      background: #0d2941;
       border-bottom: 1px solid rgba(255,255,255,0.06);
       user-select: none;
     }
@@ -1318,7 +1318,7 @@
       gap: 0;
       font-family: var(--mono);
       font-size: 11.5px;
-      background: #0C0E16;
+      background: #082137;
       padding: 10px 14px 14px;
       position: relative;
       scroll-behavior: smooth;
@@ -1340,7 +1340,7 @@
     /* custom scrollbar */
     .activity-log::-webkit-scrollbar { width: 4px; }
     .activity-log::-webkit-scrollbar-track { background: transparent; }
-    .activity-log::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.35); border-radius: 2px; }
+    .activity-log::-webkit-scrollbar-thumb { background: rgba(85,231,250,0.35); border-radius: 2px; }
 
     /* Each log line */
     .activity-line {
@@ -1380,7 +1380,7 @@
     }
     .activity-account {
       font-size: 10.5px;
-      color: #818CF8;
+      color: #55e7fa;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -1419,13 +1419,13 @@
     .activity-line.error   .activity-message { color: #FEE2E2; }
     .activity-line.warning .term-badge { background: rgba(251,191,36,0.18); color: #FBBF24; border: 1px solid rgba(251,191,36,0.25); }
     .activity-line.warning .activity-message { color: #FEF9C3; }
-    .activity-line.info    .term-badge { background: rgba(99,102,241,0.18); color: #A5B4FC; border: 1px solid rgba(99,102,241,0.2); }
+    .activity-line.info    .term-badge { background: rgba(85,231,250,0.18); color: #9ee6ff; border: 1px solid rgba(85,231,250,0.2); }
 
     /* Blinking cursor at end of last line */
     .activity-line:last-child .activity-message::after {
       content: '▋';
       display: inline-block;
-      color: #6366F1;
+      color: #55e7fa;
       animation: cursorBlink 1s step-start infinite;
       margin-left: 2px;
       font-size: 10px;
@@ -1439,7 +1439,7 @@
       padding: 6px;
       animation: termFadeIn 0.4s ease;
     }
-    .term-prompt { color: #6366F1; margin-right: 4px; }
+    .term-prompt { color: #55e7fa; margin-right: 4px; }
 
     /* Legacy selectors kept for compat */
     .activity-row, .activity-time, .activity-badge, .activity-text { display: none; }
@@ -1565,7 +1565,7 @@
       margin-bottom: 12px;
       padding: 11px 14px;
       border-left: 3px solid var(--accent);
-      background: rgba(99, 102, 241, 0.1);
+      background: rgba(85, 231, 250, 0.1);
       border-radius: 0 var(--r-sm) var(--r-sm) 0;
       font-size: 12px;
       color: var(--text);
@@ -1625,7 +1625,7 @@
     .drop-zone.drag {
       border-color: var(--accent);
       background: var(--surface2);
-      color: #C7D2FE;
+      color: #d6f7ff;
     }
 
     .del-btn {

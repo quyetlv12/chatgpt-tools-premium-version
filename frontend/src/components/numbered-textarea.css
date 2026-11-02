@@ -1,0 +1,4 @@
+.tf-numbered-editor{position:relative;display:grid;min-width:0;font-family:var(--font-mono);font-size:var(--text-base);line-height:1.7}
+.tf-workspace .tf-numbered-editor textarea{padding-left:calc(var(--number-width) + 9px);height:100%;line-height:inherit;font:inherit}
+.tf-line-gutter{position:absolute;inset:1px auto 1px 1px;width:var(--number-width);padding:9px 6px 9px 0;overflow:hidden;border-right:1px solid var(--border);border-radius:6px 0 0 6px;background:#0b2a42;color:#6094aa;text-align:right;pointer-events:none;user-select:none}
+.tf-line-gutter>div{white-space:pre}

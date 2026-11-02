@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parent
@@ -47,7 +48,7 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(str(self.socket_path))
 
 
-def build_modules(root: Path = ROOT, python: Path | None = None) -> tuple[Module, ...]:
+def build_modules(root: Path = ROOT, python: Path | None = None, port: int = HUB_PORT) -> tuple[Module, ...]:
     executable = str(python or Path(sys.executable))
     runtime = Path(os.environ.get("SHOPTAIKHOAN_SUITE_DATA_DIR") or root / "runtime").expanduser()
     sockets = runtime / "s"
@@ -62,7 +63,7 @@ def build_modules(root: Path = ROOT, python: Path | None = None) -> tuple[Module
             "twofa.localhost",
             sockets / "twofa.sock",
             Path(twofa_executable).parent if twofa_executable else root / "modules" / "twofa",
-            (twofa_executable, "--uds", str(sockets / "twofa.sock"), "--port", str(HUB_PORT), "--no-browser") if twofa_executable else (executable, "change 2fa community/server.py", "--uds", str(sockets / "twofa.sock"), "--port", str(HUB_PORT), "--no-browser"),
+            (twofa_executable, "--uds", str(sockets / "twofa.sock"), "--port", str(port), "--no-browser") if twofa_executable else (executable, "change 2fa community/server.py", "--uds", str(sockets / "twofa.sock"), "--port", str(port), "--no-browser"),
             {"SHOPTAIKHOAN_TWOFA_DATA_DIR": str(runtime / "twofa")},
         ),
         Module(
@@ -74,7 +75,7 @@ def build_modules(root: Path = ROOT, python: Path | None = None) -> tuple[Module
             (export_executable,) if export_executable else (executable, "-m", "gpt_tool.server"),
             {
                 "GPT_TOOL_SOCKET": str(sockets / "export.sock"),
-                "GPT_TOOL_PUBLIC_URL": f"http://export.localhost:{HUB_PORT}",
+                "GPT_TOOL_PUBLIC_URL": f"http://export.localhost:{port}",
                 "GPT_TOOL_DATA_DIR": str(runtime / "gpt-tool"),
             },
         ),
@@ -87,9 +88,9 @@ def build_modules(root: Path = ROOT, python: Path | None = None) -> tuple[Module
             (browser_executable,) if browser_executable else (executable, "server.py"),
             {
                 "SHOPTAIKHOAN_SOCKET": str(sockets / "browser.sock"),
-                "SHOPTAIKHOAN_PUBLIC_URL": f"http://browser.localhost:{HUB_PORT}",
+                "SHOPTAIKHOAN_PUBLIC_URL": f"http://browser.localhost:{port}",
                 "SHOPTAIKHOAN_DATA_DIR": str(runtime / "browser-login"),
-                "SHOPTAIKHOAN_IMPORT_API": f"http://browser.localhost:{HUB_PORT}/api/import",
+                "SHOPTAIKHOAN_IMPORT_API": f"http://browser.localhost:{port}/api/import",
             },
         ),
         Module(
@@ -101,7 +102,7 @@ def build_modules(root: Path = ROOT, python: Path | None = None) -> tuple[Module
             (chat_backup_executable,) if chat_backup_executable else (executable, "-m", "chat_backup.server"),
             {
                 "CHAT_BACKUP_SOCKET": str(sockets / "chat-backup.sock"),
-                "CHAT_BACKUP_PUBLIC_URL": f"http://backup.localhost:{HUB_PORT}",
+                "CHAT_BACKUP_PUBLIC_URL": f"http://backup.localhost:{port}",
                 "CHAT_BACKUP_DATA_DIR": str(runtime / "chat-backup"),
             },
         ),
@@ -297,16 +298,44 @@ def create_hub_server(host: str, port: int, manager: SuiteManager, web_root: Pat
             request_host = self.headers.get("Host", "").split(":", 1)[0].lower()
             return next((module for module in manager.modules if module.public_host == request_host), None)
 
-        def _proxy(self, module: Module) -> None:
+        def _route_module(self) -> bool:
+            if module := self._module():
+                self._proxy(module)
+                return True
+            if not self.path.startswith("/modules/"):
+                return False
+            parts = self.path.split("/", 3)
+            module = next((item for item in manager.modules if item.key == parts[2]), None)
+            if module is None or len(parts) < 4:
+                self._send(404, b"Unknown module", "text/plain; charset=utf-8")
+                return True
+            allowed = {f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}",
+                       "http://127.0.0.1:5173", "http://127.0.0.1:4173"}
+            request_host = self.headers.get("Host", "")
+            origin = self.headers.get("Origin")
+            if f"http://{request_host}" not in allowed or (origin and origin not in allowed):
+                self._send(403, b"Origin not allowed", "text/plain; charset=utf-8")
+                return True
+            upstream = "/" + parts[3]
+            # Only API calls and explicit native enrollment launch pages are exposed.
+            if not (upstream.startswith("/api/") or upstream == "/api") or "\\" in upstream or any(segment in {".", ".."} for segment in urlsplit(upstream).path.split("/")):
+                self._send(404, b"Not found", "text/plain; charset=utf-8")
+                return True
+            self._proxy(module, upstream, rewrite_origin=bool(origin))
+            return True
+
+        def _proxy(self, module: Module, path: str | None = None, rewrite_origin: bool = False) -> None:
             hop_headers = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else None
             headers = {key: value for key, value in self.headers.items() if key.lower() not in hop_headers and key.lower() != "host"}
             headers["Host"] = module.public_host
             headers["Connection"] = "close"
+            if rewrite_origin:
+                headers["Origin"] = f"http://{module.public_host}:{self.server.server_port}"
             connection = UnixHTTPConnection(module.socket_path)
             try:
-                connection.request(self.command, self.path, body=body, headers=headers)
+                connection.request(self.command, path or self.path, body=body, headers=headers)
                 response = connection.getresponse()
                 self.send_response(response.status, response.reason)
                 for key, value in response.getheaders():
@@ -335,8 +364,7 @@ def create_hub_server(host: str, port: int, manager: SuiteManager, web_root: Pat
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            if module := self._module():
-                self._proxy(module)
+            if self._route_module():
                 return
             path = self.path.split("?", 1)[0]
             if path == "/api/status":
@@ -350,14 +378,18 @@ def create_hub_server(host: str, port: int, manager: SuiteManager, web_root: Pat
                 "/favicon.svg": (web_root / "favicon.svg", "image/svg+xml"),
             }
             target = files.get(path)
+            if path.startswith("/assets/"):
+                import mimetypes
+                asset = (web_root / path.lstrip("/")).resolve()
+                if asset.is_relative_to((web_root / "assets").resolve()):
+                    target = (asset, mimetypes.guess_type(asset.name)[0] or "application/octet-stream")
             if target and target[0].is_file():
                 self._send(200, target[0].read_bytes(), target[1])
                 return
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
         def do_POST(self) -> None:
-            if module := self._module():
-                self._proxy(module)
+            if self._route_module():
                 return
             if self.path.split("?", 1)[0] == "/api/windows/close":
                 body = json.dumps(manager.close_all_browser_windows(), ensure_ascii=False).encode("utf-8")
@@ -370,20 +402,17 @@ def create_hub_server(host: str, port: int, manager: SuiteManager, web_root: Pat
             threading.Thread(target=self.server.shutdown, name="suite-shutdown", daemon=True).start()
 
         def do_PUT(self) -> None:
-            if module := self._module():
-                self._proxy(module)
+            if self._route_module():
                 return
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
         def do_DELETE(self) -> None:
-            if module := self._module():
-                self._proxy(module)
+            if self._route_module():
                 return
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
         def do_OPTIONS(self) -> None:
-            if module := self._module():
-                self._proxy(module)
+            if self._route_module():
                 return
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
@@ -404,7 +433,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=HUB_PORT)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
-    manager = SuiteManager(build_modules())
+    manager = SuiteManager(build_modules(port=args.port))
     server = create_hub_server(HOST, args.port, manager, ROOT / "web")
     manager.start()
     def terminate(_signum: int, _frame: object) -> None:
