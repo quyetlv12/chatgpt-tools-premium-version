@@ -41,7 +41,7 @@ class SuiteMenuTests(unittest.TestCase):
         self.assertIn('"$ROOT/packaging/macos/MenuBarTemplate.svg" "$APP/Contents/Resources/MenuBarTemplate.svg"', script)
 
     def test_dashboard_and_module_shortcuts_use_dedicated_brave_profile(self):
-        self.assertIn('openInBrave(dashboardURL)', self.source)
+        self.assertIn('openInBrave(dashboardURL, reuseWindow: true)', self.source)
         self.assertIn('configuration.createsNewApplicationInstance = true', self.source)
         self.assertIn('NSWorkspace.shared.openApplication', self.source)
         self.assertNotIn('NSWorkspace.shared.open(', self.source)

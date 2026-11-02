@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 
 enum SuiteBrowser {
     static func profileURL(applicationSupport: URL, supportName: String) -> URL {
@@ -9,6 +10,72 @@ enum SuiteBrowser {
 
     static func arguments(profile: URL, url: URL) -> [String] {
         ["--user-data-dir=\(profile.path)", "--no-first-run", "--no-default-browser-check", "--new-window", url.absoluteString]
+    }
+
+    static func decodeArguments(_ bytes: [UInt8]) -> [String] {
+        guard bytes.count > MemoryLayout<Int32>.size else { return [] }
+        let count = bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard count > 0, count < bytes.count else { return [] }
+        var index = MemoryLayout<Int32>.size
+        while index < bytes.count && bytes[index] != 0 { index += 1 }
+        while index < bytes.count && bytes[index] == 0 { index += 1 }
+        var arguments: [String] = []
+        for _ in 0..<count {
+            let start = index
+            while index < bytes.count && bytes[index] != 0 { index += 1 }
+            guard index < bytes.count else { return [] }
+            arguments.append(String(decoding: bytes[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return arguments
+    }
+
+    static func usesProfile(_ arguments: [String], profile: URL) -> Bool {
+        arguments.contains("--user-data-dir=\(profile.path)")
+    }
+
+    static func runningApplication(profile: URL) -> NSRunningApplication? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.brave.Browser").first { app in
+            var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, app.processIdentifier]
+            var size = 0
+            guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return false }
+            var bytes = [UInt8](repeating: 0, count: size)
+            guard sysctl(&mib, UInt32(mib.count), &bytes, &size, nil, 0) == 0 else { return false }
+            return usesProfile(decodeArguments(Array(bytes.prefix(size))), profile: profile)
+        }
+    }
+
+    static func hasWindow(pid: pid_t, windows: [[String: Any]]) -> Bool {
+        windows.contains { window in
+            guard window[kCGWindowOwnerPID as String] as? pid_t == pid,
+                  window[kCGWindowLayer as String] as? Int == 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let width = bounds["Width"] as? NSNumber, let height = bounds["Height"] as? NSNumber
+            else { return false }
+            // Chromium also owns invisible helper windows and thin menu strips.
+            return width.doubleValue > 200 && height.doubleValue > 150
+        }
+    }
+
+    static func hasWindow(_ application: NSRunningApplication) -> Bool {
+        let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+        return hasWindow(pid: application.processIdentifier, windows: windows)
+    }
+
+    static func focus(_ application: NSRunningApplication) {
+        application.unhide()
+        // Dock's reopen event also restores minimized Chromium windows.
+        let reopen = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEReopenApplication),
+            targetDescriptor: NSAppleEventDescriptor(processIdentifier: application.processIdentifier),
+            returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+        let noConsentPrompt = NSAppleEventDescriptor.SendOptions(rawValue: UInt(kAEDoNotPromptForUserConsent))
+        _ = try? reopen.sendEvent(options: [.noReply, .neverInteract, noConsentPrompt], timeout: 1)
+        if #available(macOS 14.0, *) {
+            NSApplication.shared.yieldActivation(to: application)
+            application.activate(from: .current, options: [.activateAllWindows])
+        } else {
+            application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
     }
 }
 
@@ -21,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var ownsHub = false
     private var statusItem: NSStatusItem?
     private var dashboardReady = false
+    private var openingDashboard = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -171,7 +239,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert(); alert.messageText = title; alert.informativeText = message; alert.alertStyle = .critical; alert.runModal()
     }
 
-    private func openInBrave(_ url: URL) {
+    private func openInBrave(_ url: URL, reuseWindow: Bool = false) {
+        if reuseWindow && openingDashboard { return }
         guard let brave = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.brave.Browser") else {
             showError("Hãy cài Brave Browser rồi chọn Mở giao diện để thử lại. Profile riêng của tool được lưu độc lập với Brave cá nhân.", title: "Không tìm thấy Brave Browser")
             return
@@ -179,20 +248,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let profile = SuiteBrowser.profileURL(applicationSupport: support, supportName: supportName)
+            if reuseWindow, let application = SuiteBrowser.runningApplication(profile: profile), SuiteBrowser.hasWindow(application) {
+                openingDashboard = true
+                SuiteBrowser.focus(application)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.openingDashboard = false
+                }
+                return
+            }
             try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            if reuseWindow { openingDashboard = true }
             let configuration = NSWorkspace.OpenConfiguration()
             // A separate instance is required when personal Brave is already running.
             configuration.createsNewApplicationInstance = true
             configuration.arguments = SuiteBrowser.arguments(profile: profile, url: url)
             NSWorkspace.shared.openApplication(at: brave, configuration: configuration) { [weak self] _, error in
-                if let error {
-                    DispatchQueue.main.async { self?.showError(error.localizedDescription, title: "Không thể mở Brave Browser") }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let error {
+                        if reuseWindow { self.openingDashboard = false }
+                        self.showError(error.localizedDescription, title: "Không thể mở Brave Browser")
+                    } else if reuseWindow {
+                        self.waitForDashboardWindow(profile: profile, attempt: 0)
+                    }
                 }
             }
         } catch { showError(error.localizedDescription, title: "Không thể tạo profile Brave riêng") }
     }
 
-    @objc private func openDashboard() { openInBrave(dashboardURL) }
+    private func waitForDashboardWindow(profile: URL, attempt: Int) {
+        if let application = SuiteBrowser.runningApplication(profile: profile), SuiteBrowser.hasWindow(application) {
+            openingDashboard = false
+        } else if attempt < 100 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForDashboardWindow(profile: profile, attempt: attempt + 1)
+            }
+        } else {
+            openingDashboard = false
+        }
+    }
+
+    @objc private func openDashboard() { openInBrave(dashboardURL, reuseWindow: true) }
     @objc private func openTool(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         openInBrave(url)
